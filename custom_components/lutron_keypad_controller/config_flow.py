@@ -334,14 +334,11 @@ class LutronKeypadsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        return LutronKeypadsOptionsFlow(config_entry)
+        return LutronKeypadsOptionsFlow()
 
 
 class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
     """Options flow — button assignments live in YAML."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
