@@ -61,6 +61,22 @@
           "led_entity": "LED Indicator Entity",
           "scene_group": "Scene Group Name"
         }
+      },
+      "bulk": {
+        "title": "Bulk Edit — {keypad_name}",
+        "description": "Select the buttons to edit and the action type to apply to all of them.",
+        "data": {
+          "button_numbers": "Buttons to Edit",
+          "action_type": "Action Type"
+        }
+      },
+      "bulk_entity": {
+        "title": "Bulk Edit — {keypad_name}",
+        "description": "Choose the target entity to apply to {button_count} button(s) as **{action_type}**.",
+        "data": {
+          "action_target": "Target Entity",
+          "scene_group": "Scene Group Name"
+        }
       }
     }
   }
