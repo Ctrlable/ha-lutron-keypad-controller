@@ -47,10 +47,16 @@
       },
       "button": {
         "title": "Button {button_number} — {keypad_name}",
-        "description": "Configure the action for this button.",
+        "description": "Set the label and action type for this button.",
         "data": {
           "label": "Button Label",
-          "action_type": "Action Type",
+          "action_type": "Action Type"
+        }
+      },
+      "entity": {
+        "title": "Button {button_number} — {keypad_name}",
+        "description": "Choose the target entity for **{action_type}**.",
+        "data": {
           "action_target": "Target Entity",
           "led_entity": "LED Indicator Entity",
           "scene_group": "Scene Group Name"

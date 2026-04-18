@@ -466,41 +466,43 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
             )
         })
 
-    def _build_button_schema(self, btn_num: str) -> vol.Schema:
+    def _build_button_type_schema(self, btn_num: str) -> vol.Schema:
+        cfg = self._buttons_config.get(btn_num, {})
+        return vol.Schema({
+            vol.Optional("label", default=cfg.get("label", f"Button {btn_num}")): (
+                selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+                )
+            ),
+            vol.Required("action_type", default=cfg.get(CONF_ACTION_TYPE, ACTION_NONE)): (
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=_ACTION_OPTIONS,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            ),
+        })
+
+    def _build_entity_schema(self, btn_num: str) -> vol.Schema:
         cfg = self._buttons_config.get(btn_num, {})
         cur_action = cfg.get(CONF_ACTION_TYPE, ACTION_NONE)
-        cur_label  = cfg.get("label", f"Button {btn_num}")
+        domains, multiple = _ACTION_DOMAINS[cur_action]
+        raw_target = cfg.get(CONF_ACTION_TARGET, "")
+
+        if multiple:
+            default_target = self._normalize_target(raw_target)
+        else:
+            tgt_list = self._normalize_target(raw_target)
+            default_target = tgt_list[0] if tgt_list else ""
 
         schema_dict: dict = {
-            vol.Optional("label", default=cur_label): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-            ),
-            vol.Required("action_type", default=cur_action): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=_ACTION_OPTIONS,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
+            vol.Optional("action_target", default=default_target): (
+                selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=domains, multiple=multiple)
                 )
             ),
         }
-
-        if cur_action in _ACTION_DOMAINS:
-            domains, multiple = _ACTION_DOMAINS[cur_action]
-            raw_target = cfg.get(CONF_ACTION_TARGET, "")
-            if multiple:
-                default_target = self._normalize_target(raw_target)
-                schema_dict[vol.Optional("action_target", default=default_target)] = (
-                    selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=domains, multiple=True)
-                    )
-                )
-            else:
-                tgt_list = self._normalize_target(raw_target)
-                default_target = tgt_list[0] if tgt_list else ""
-                schema_dict[vol.Optional("action_target", default=default_target)] = (
-                    selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=domains, multiple=False)
-                    )
-                )
 
         if cur_action == ACTION_STATEFUL_SCENE:
             cur_led = cfg.get(CONF_LED_ENTITY, "")
@@ -556,7 +558,7 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
             description_placeholders={"name": keypad_name},
         )
 
-    # ── Step 2 — Configure one button ────────────────────────────────────────
+    # ── Step 2 — Label + action type ─────────────────────────────────────────
 
     async def async_step_button(
         self, user_input: dict[str, Any] | None = None
@@ -567,25 +569,45 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             new_type = user_input.get("action_type", ACTION_NONE)
             old_cfg  = self._buttons_config.get(btn_num, {})
-            old_type = old_cfg.get(CONF_ACTION_TYPE, ACTION_NONE)
 
-            # Always persist label and action_type
             self._buttons_config[btn_num] = {
                 **old_cfg,
                 "label":          user_input.get("label", f"Button {btn_num}"),
                 CONF_ACTION_TYPE: new_type,
             }
 
-            if new_type != old_type:
-                # Re-render with updated entity selector domains
-                return await self.async_step_button()
+            if new_type in _ACTION_DOMAINS:
+                return await self.async_step_entity()
 
-            # Persist entity target
+            # No entity needed — clear any stale target and go back to list
+            self._buttons_config[btn_num][CONF_ACTION_TARGET] = []
+            self._buttons_config[btn_num][CONF_LED_ENTITY] = ""
+            self._buttons_config[btn_num]["scene_group"] = ""
+            return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="button",
+            data_schema=self._build_button_type_schema(btn_num),
+            description_placeholders={
+                "button_number": btn_num,
+                "keypad_name":   keypad_name,
+            },
+        )
+
+    # ── Step 3 — Entity selection ─────────────────────────────────────────────
+
+    async def async_step_entity(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        btn_num = self._current_btn
+        keypad_name = self.config_entry.data.get("name", "Keypad")
+        cur_action  = self._buttons_config.get(btn_num, {}).get(CONF_ACTION_TYPE, ACTION_NONE)
+
+        if user_input is not None:
             raw_target = user_input.get("action_target", "")
             self._buttons_config[btn_num][CONF_ACTION_TARGET] = (
                 self._normalize_target(raw_target)
             )
-
             self._buttons_config[btn_num][CONF_LED_ENTITY] = (
                 user_input.get("led_entity", "")
             )
@@ -593,14 +615,14 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
             self._buttons_config[btn_num]["scene_group"] = (
                 sg.strip() if isinstance(sg, str) else ""
             )
-
             return await self.async_step_init()
 
         return self.async_show_form(
-            step_id="button",
-            data_schema=self._build_button_schema(btn_num),
+            step_id="entity",
+            data_schema=self._build_entity_schema(btn_num),
             description_placeholders={
                 "button_number": btn_num,
                 "keypad_name":   keypad_name,
+                "action_type":   cur_action,
             },
         )
