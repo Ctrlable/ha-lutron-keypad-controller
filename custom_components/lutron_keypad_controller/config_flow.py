@@ -475,11 +475,18 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
         )
         if ctrl is None or not ctrl._led_map:
             return ""
-        button_names: dict[str, str] = self.config_entry.data.get("button_names", {})
         lines = ["\n\n**Auto-discovered LED bindings:**"]
         for btn_num in sorted(ctrl._led_map):
-            label = button_names.get(str(btn_num), f"Button {btn_num}")
-            lines.append(f"- {label} (#{btn_num}) → `{ctrl._led_map[btn_num]}`")
+            # Prefer the user-configured label; fall back to saved engraving name
+            btn_cfg = ctrl._buttons.get(btn_num, {})
+            saved_names: dict[str, str] = self.config_entry.data.get("button_names", {})
+            label = (
+                btn_cfg.get("label")
+                or self._buttons_config.get(btn_num, {}).get("label")
+                or saved_names.get(str(btn_num))
+                or f"Button {btn_num}"
+            )
+            lines.append(f"- {label} (button #{btn_num}) → `{ctrl._led_map[btn_num]}`")
         return "\n".join(lines)
 
     def _normalize_target(self, target: Any) -> list[str]:

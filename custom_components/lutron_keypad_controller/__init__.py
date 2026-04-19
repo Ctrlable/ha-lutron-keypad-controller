@@ -137,6 +137,7 @@ from .const import (
     ATTR_LAST_ACTION,
     ATTR_COVER_STATES,
     ATTR_LIGHT_DIM_STEPS,
+    get_button_layout,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -754,6 +755,52 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
+# ── LED map key normalization ─────────────────────────────────────────────────
+
+def _normalize_led_map(
+    raw_led_map: dict[int, str],
+    config_entry: ConfigEntry,
+) -> dict[int, str]:
+    """Ensure LED map keys match the button numbers the controller uses.
+
+    Discovery extracts LEAP button IDs from entity unique_ids (e.g. 5376, 5380 …).
+    If the config entry stored these same IDs in ``button_numbers`` (bridge
+    detection succeeded at setup time) the keys already match.
+
+    If the config entry uses sequential fallback numbers (1-N) because bridge
+    detection failed at setup time, remap by sort order: smallest LEAP ID →
+    button 1, next → button 2, etc.  This works because Lutron assigns LEAP IDs
+    in physical button order within a device.
+    """
+    if not raw_led_map:
+        return raw_led_map
+
+    layout = get_button_layout(config_entry.data)
+    layout_numbers = {b["number"] for b in layout}
+
+    # Fast path: keys already match
+    if any(k in layout_numbers for k in raw_led_map):
+        return raw_led_map
+
+    # LEAP IDs don't match layout numbers → remap by ascending sort order
+    configurable = sorted(
+        b["number"] for b in layout
+        if not b["is_raise"] and not b["is_lower"]
+    )
+    sorted_leap = sorted(raw_led_map.keys())
+
+    remapped: dict[int, str] = {}
+    for btn_num, leap_id in zip(configurable, sorted_leap):
+        remapped[btn_num] = raw_led_map[leap_id]
+
+    _LOGGER.info(
+        "LED map: LEAP IDs %s remapped to button numbers %s",
+        sorted_leap,
+        list(remapped.keys()),
+    )
+    return remapped
+
+
 # ── Controller ────────────────────────────────────────────────────────────────
 
 class LutronKeypadsController:
@@ -813,16 +860,18 @@ class LutronKeypadsController:
         """Discover LED entities — button-entity method first, registry scan as fallback."""
         if self._config_entry is None:
             return
-        self._led_map = await _find_led_entities_by_button_entities(
+        raw_map = await _find_led_entities_by_button_entities(
             self.hass, self._config_entry
         )
-        if not self._led_map:
+        if not raw_map:
             _LOGGER.debug(
                 "'%s': button-entity LED discovery found nothing — trying registry scan",
                 self.name,
             )
-            self._led_map = await _find_led_entities(self.hass, self._config_entry)
-        if not self._led_map:
+            raw_map = await _find_led_entities(self.hass, self._config_entry)
+        if raw_map:
+            self._led_map = _normalize_led_map(raw_map, self._config_entry)
+        else:
             _LOGGER.debug(
                 "'%s': no LED entities found (expected for CASETA Pro keypads "
                 "without LED feedback). Call debug_leds service to diagnose.",
