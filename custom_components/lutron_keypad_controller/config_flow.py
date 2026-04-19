@@ -36,6 +36,7 @@ from .const import (
     ACTION_LOWER,
     ACTION_TYPE_LABELS,
     ACTION_TYPE_DOMAINS,
+    ACTION_TYPES_NEEDING_ENTITY,
     MULTI_ENTITY_ACTIONS,
     get_button_list,
     get_button_layout,
@@ -395,360 +396,193 @@ class LutronKeypadsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 # ── Options Flow ──────────────────────────────────────────────────────────────
 
-# Maps action type → (entity domains, multiple)
-_ACTION_DOMAINS: dict[str, tuple[list[str], bool]] = {
-    "stateful_scene":  (["scene"],                                           False),
-    "ha_scene":        (["scene"],                                           False),
-    "automation":      (["automation"],                                      False),
-    "script":          (["script"],                                          False),
-    "entity_toggle":   (["light", "switch", "fan",
-                         "input_boolean", "cover", "media_player"],         True),
-    "cover_cycle":     (["cover"],                                           True),
-    "light_cycle_dim": (["light"],                                           True),
-}
-
 _ACTION_OPTIONS = [
-    {"value": "stateful_scene",  "label": "🎬 Stateful Scene"},
-    {"value": "ha_scene",        "label": "💡 HA Scene"},
-    {"value": "automation",      "label": "▶️ Automation"},
-    {"value": "script",          "label": "📜 Script"},
-    {"value": "entity_toggle",   "label": "🔀 Entity Toggle"},
-    {"value": "cover_cycle",     "label": "🪟 Shade Cycle"},
-    {"value": "light_cycle_dim", "label": "🔆 Dim Cycle"},
-    {"value": "raise",           "label": "⬆️ Raise"},
-    {"value": "lower",           "label": "⬇️ Lower"},
-    {"value": "none",            "label": "➖ None"},
+    {"value": k, "label": v}
+    for k, v in ACTION_TYPE_LABELS.items()
 ]
 
 
 class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
-    """Multi-step options wizard: button list → single-button edit or bulk edit."""
+    """Two-step options wizard matching the rfwc5 pattern.
+
+    Step 1 (buttons): all configurable buttons shown at once — label + action type.
+    Step 2 (entities): entity pickers for every button that needs a target.
+    """
 
     def __init__(self) -> None:
-        self._buttons_config: dict[str, dict] = {}
-        self._current_btn: str = ""
-        self._bulk_buttons: list[str] = []
-        self._bulk_action: str = ACTION_NONE
+        self._buttons_config: dict[int, dict] = {}
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get_all_buttons(self) -> list[dict]:
         return get_button_layout(self.config_entry.data)
 
-    def _get_button_numbers(self) -> list[str]:
-        return [str(b["number"]) for b in self._get_all_buttons()
-                if not b["is_raise"] and not b["is_lower"]]
+    def _get_configurable(self) -> list[dict]:
+        return [b for b in self._get_all_buttons() if not b["is_raise"] and not b["is_lower"]]
 
-    def _get_current_buttons(self) -> dict:
-        return dict(self.config_entry.options.get("buttons", {}))
+    def _get_raise_lower_note(self) -> str:
+        parts = []
+        for b in self._get_all_buttons():
+            if b["is_raise"]:
+                parts.append(f"Button {b['number']} (Raise)")
+            elif b["is_lower"]:
+                parts.append(f"Button {b['number']} (Lower)")
+        if not parts:
+            return ""
+        return f"{', '.join(parts)} are fixed raise/lower buttons and cannot be reassigned."
 
     def _normalize_target(self, target: Any) -> list[str]:
         if isinstance(target, list):
-            return [e.strip() for e in target if str(e).strip()]
+            return [str(e).strip() for e in target if str(e).strip()]
         if isinstance(target, str) and target.strip():
             return [e.strip() for e in target.split(",") if e.strip()]
         return []
 
-    def _build_init_schema(self) -> vol.Schema:
-        keypad_name = self.config_entry.data.get("name", "Keypad")
-        options: list[dict] = [
-            {"value": "bulk_edit", "label": "✏️ Bulk Edit Multiple Buttons"},
-        ]
-
-        for btn in self._get_all_buttons():
-            n = str(btn["number"])
-            if btn["is_raise"]:
-                options.append({"value": n, "label": f"Button {n} — ⬆️ Raise (fixed)"})
-                continue
-            if btn["is_lower"]:
-                options.append({"value": n, "label": f"Button {n} — ⬇️ Lower (fixed)"})
-                continue
-
-            cfg = self._buttons_config.get(n, {})
-            lbl = cfg.get("label", f"Button {n}")
-            act = cfg.get(CONF_ACTION_TYPE, ACTION_NONE)
-            tgt = self._normalize_target(cfg.get(CONF_ACTION_TARGET, ""))
-            tgt_str = ", ".join(tgt) if tgt else ""
-            if tgt_str:
-                summary = f"Button {n} — {lbl}  [{act} → {tgt_str}]"
-            else:
-                summary = f"Button {n} — {lbl}  [{act}]"
-            options.append({"value": n, "label": summary})
-
-        options.append({"value": "save", "label": "✓ Save & Close"})
-
-        return vol.Schema({
-            vol.Required("selected_button", default="save"): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=options,
-                    mode=selector.SelectSelectorMode.LIST,
-                )
-            )
-        })
-
-    def _build_button_type_schema(self, btn_num: str) -> vol.Schema:
-        cfg = self._buttons_config.get(btn_num, {})
-        return vol.Schema({
-            vol.Optional("label", default=cfg.get("label", f"Button {btn_num}")): (
-                selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-                )
-            ),
-            vol.Required("action_type", default=cfg.get(CONF_ACTION_TYPE, ACTION_NONE)): (
-                selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=_ACTION_OPTIONS,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                )
-            ),
-        })
-
-    def _build_entity_schema(self, btn_num: str) -> vol.Schema:
-        cfg = self._buttons_config.get(btn_num, {})
-        cur_action = cfg.get(CONF_ACTION_TYPE, ACTION_NONE)
-        domains, multiple = _ACTION_DOMAINS[cur_action]
-        raw_target = cfg.get(CONF_ACTION_TARGET, "")
-
+    def _default_entity(self, cfg: dict, multiple: bool) -> Any:
+        raw = cfg.get(CONF_ACTION_TARGET, "")
         if multiple:
-            default_target = self._normalize_target(raw_target)
-        else:
-            tgt_list = self._normalize_target(raw_target)
-            default_target = tgt_list[0] if tgt_list else ""
+            return raw if isinstance(raw, list) else self._normalize_target(raw)
+        if isinstance(raw, list):
+            return raw[0] if raw else ""
+        return raw or ""
 
-        schema_dict: dict = {
-            vol.Optional("action_target", default=default_target): (
-                selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=domains, multiple=multiple)
-                )
-            ),
-        }
-
-        if cur_action == ACTION_STATEFUL_SCENE:
-            cur_led = cfg.get(CONF_LED_ENTITY, "")
-            schema_dict[vol.Optional("led_entity", default=cur_led)] = (
-                selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["switch"], multiple=False)
-                )
-            )
-            cur_sg = cfg.get("scene_group", "")
-            schema_dict[vol.Optional("scene_group", default=cur_sg)] = (
-                selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-                )
-            )
-
-        return vol.Schema(schema_dict)
-
-    # ── Step 1 — Button list ──────────────────────────────────────────────────
+    # ── Step 1 — Configure all buttons ───────────────────────────────────────
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        return await self.async_step_buttons(user_input)
+
+    async def async_step_buttons(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        # Seed from existing options on first visit
         if not self._buttons_config:
-            existing = self._get_current_buttons()
-            all_btns = self._get_all_buttons()
-            for btn in all_btns:
-                n = str(btn["number"])
+            saved = self.config_entry.options.get("buttons", {})
+            for k, v in saved.items():
+                try:
+                    self._buttons_config[int(k)] = dict(v)
+                except (ValueError, TypeError):
+                    pass
+
+        configurable = self._get_configurable()
+        keypad_name = self.config_entry.data.get("name", "Keypad")
+
+        if user_input is not None:
+            for btn in configurable:
+                n = btn["number"]
+                old_cfg = self._buttons_config.get(n, {})
+                new_action = user_input.get(f"button_{n}_action_type", ACTION_NONE)
+                self._buttons_config[n] = {
+                    **old_cfg,
+                    "label": user_input.get(f"button_{n}_label", f"Button {n}"),
+                    CONF_ACTION_TYPE: new_action,
+                }
+                if new_action not in ACTION_TYPES_NEEDING_ENTITY:
+                    self._buttons_config[n][CONF_ACTION_TARGET] = []
+                    self._buttons_config[n][CONF_LED_ENTITY] = ""
+                    self._buttons_config[n]["scene_group"] = ""
+
+            # Preserve raise/lower entries
+            for btn in self._get_all_buttons():
                 if btn["is_raise"]:
-                    self._buttons_config[n] = {"label": "Raise", CONF_ACTION_TYPE: ACTION_RAISE}
+                    self._buttons_config[btn["number"]] = {"label": "Raise", CONF_ACTION_TYPE: ACTION_RAISE}
                 elif btn["is_lower"]:
-                    self._buttons_config[n] = {"label": "Lower", CONF_ACTION_TYPE: ACTION_LOWER}
-                else:
-                    self._buttons_config[n] = dict(existing.get(n, {}))
+                    self._buttons_config[btn["number"]] = {"label": "Lower", CONF_ACTION_TYPE: ACTION_LOWER}
 
-        if user_input is not None:
-            selected = user_input.get("selected_button", "save")
-            if selected == "save":
-                return self.async_create_entry(title="", data={"buttons": self._buttons_config})
-            if selected == "bulk_edit":
-                return await self.async_step_bulk()
-            # Fixed raise/lower buttons are not editable
-            btn_obj = next(
-                (b for b in self._get_all_buttons() if str(b["number"]) == selected),
-                None,
+            needs_entity = any(
+                self._buttons_config.get(b["number"], {}).get(CONF_ACTION_TYPE) in ACTION_TYPES_NEEDING_ENTITY
+                for b in configurable
             )
-            if btn_obj and (btn_obj["is_raise"] or btn_obj["is_lower"]):
-                return await self.async_step_init()
-            self._current_btn = selected
-            return await self.async_step_button()
-
-        keypad_name = self.config_entry.data.get("name", "Keypad")
-        return self.async_show_form(
-            step_id="init",
-            data_schema=self._build_init_schema(),
-            description_placeholders={"name": keypad_name},
-        )
-
-    # ── Step 2 — Label + action type ─────────────────────────────────────────
-
-    async def async_step_button(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        btn_num = self._current_btn
-        keypad_name = self.config_entry.data.get("name", "Keypad")
-
-        if user_input is not None:
-            new_type = user_input.get("action_type", ACTION_NONE)
-            old_cfg  = self._buttons_config.get(btn_num, {})
-
-            self._buttons_config[btn_num] = {
-                **old_cfg,
-                "label":          user_input.get("label", f"Button {btn_num}"),
-                CONF_ACTION_TYPE: new_type,
-            }
-
-            if new_type in _ACTION_DOMAINS:
-                return await self.async_step_entity()
-
-            # No entity needed — clear any stale target and go back to list
-            self._buttons_config[btn_num][CONF_ACTION_TARGET] = []
-            self._buttons_config[btn_num][CONF_LED_ENTITY] = ""
-            self._buttons_config[btn_num]["scene_group"] = ""
-            return await self.async_step_init()
-
-        return self.async_show_form(
-            step_id="button",
-            data_schema=self._build_button_type_schema(btn_num),
-            description_placeholders={
-                "button_number": btn_num,
-                "keypad_name":   keypad_name,
-            },
-        )
-
-    # ── Step 3 — Entity selection ─────────────────────────────────────────────
-
-    async def async_step_entity(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        btn_num = self._current_btn
-        keypad_name = self.config_entry.data.get("name", "Keypad")
-        cur_action  = self._buttons_config.get(btn_num, {}).get(CONF_ACTION_TYPE, ACTION_NONE)
-
-        if user_input is not None:
-            raw_target = user_input.get("action_target", "")
-            self._buttons_config[btn_num][CONF_ACTION_TARGET] = (
-                self._normalize_target(raw_target)
+            if needs_entity:
+                return await self.async_step_entities()
+            return self.async_create_entry(
+                title="",
+                data={"buttons": {str(k): v for k, v in self._buttons_config.items()}},
             )
-            self._buttons_config[btn_num][CONF_LED_ENTITY] = (
-                user_input.get("led_entity", "")
+
+        schema_dict: dict = {}
+        for btn in configurable:
+            n = btn["number"]
+            cfg = self._buttons_config.get(n, {})
+            schema_dict[vol.Optional(f"button_{n}_label", default=cfg.get("label", f"Button {n}"))] = (
+                selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT))
             )
-            sg = user_input.get("scene_group", "")
-            self._buttons_config[btn_num]["scene_group"] = (
-                sg.strip() if isinstance(sg, str) else ""
-            )
-            return await self.async_step_init()
-
-        return self.async_show_form(
-            step_id="entity",
-            data_schema=self._build_entity_schema(btn_num),
-            description_placeholders={
-                "button_number": btn_num,
-                "keypad_name":   keypad_name,
-                "action_type":   cur_action,
-            },
-        )
-
-    # ── Step 4 — Bulk edit: pick buttons + action type ────────────────────────
-
-    async def async_step_bulk(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        keypad_name = self.config_entry.data.get("name", "Keypad")
-
-        if user_input is not None:
-            self._bulk_buttons = user_input.get("button_numbers", [])
-            self._bulk_action  = user_input.get("action_type", ACTION_NONE)
-
-            if not self._bulk_buttons:
-                return await self.async_step_init()
-
-            if self._bulk_action in _ACTION_DOMAINS:
-                return await self.async_step_bulk_entity()
-
-            # No entity needed — apply action type immediately and clear targets
-            for n in self._bulk_buttons:
-                old_cfg = self._buttons_config.get(n, {})
-                self._buttons_config[n] = {
-                    **old_cfg,
-                    CONF_ACTION_TYPE:   self._bulk_action,
-                    CONF_ACTION_TARGET: [],
-                    CONF_LED_ENTITY:    "",
-                    "scene_group":      "",
-                }
-            return await self.async_step_init()
-
-        configurable = self._get_button_numbers()
-        btn_options = [
-            {
-                "value": n,
-                "label": f"Button {n}: {self._buttons_config.get(n, {}).get('label', f'Button {n}')}",
-            }
-            for n in configurable
-        ]
-
-        schema = vol.Schema({
-            vol.Required("button_numbers"): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=btn_options,
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.LIST,
-                )
-            ),
-            vol.Required("action_type", default=ACTION_NONE): selector.SelectSelector(
-                selector.SelectSelectorConfig(
+            schema_dict[vol.Required(f"button_{n}_action_type", default=cfg.get(CONF_ACTION_TYPE, ACTION_NONE))] = (
+                selector.SelectSelector(selector.SelectSelectorConfig(
                     options=_ACTION_OPTIONS,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-        })
-
-        return self.async_show_form(
-            step_id="bulk",
-            data_schema=schema,
-            description_placeholders={"keypad_name": keypad_name},
-        )
-
-    # ── Step 5 — Bulk edit: entity selection ──────────────────────────────────
-
-    async def async_step_bulk_entity(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        keypad_name  = self.config_entry.data.get("name", "Keypad")
-        bulk_action  = self._bulk_action
-        domains, multiple = _ACTION_DOMAINS[bulk_action]
-
-        if user_input is not None:
-            raw_target  = user_input.get("action_target", "")
-            target      = self._normalize_target(raw_target)
-            scene_group = user_input.get("scene_group", "")
-
-            for n in self._bulk_buttons:
-                old_cfg = self._buttons_config.get(n, {})
-                self._buttons_config[n] = {
-                    **old_cfg,
-                    CONF_ACTION_TYPE:   bulk_action,
-                    CONF_ACTION_TARGET: target,
-                    "scene_group": scene_group.strip() if isinstance(scene_group, str) else "",
-                }
-            return await self.async_step_init()
-
-        schema_dict: dict = {
-            vol.Optional("action_target"): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=domains, multiple=multiple)
-            ),
-        }
-        if bulk_action == ACTION_STATEFUL_SCENE:
-            schema_dict[vol.Optional("scene_group", default="")] = selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+                    mode=selector.SelectSelectorMode.LIST,
+                ))
             )
 
         return self.async_show_form(
-            step_id="bulk_entity",
+            step_id="buttons",
             data_schema=vol.Schema(schema_dict),
             description_placeholders={
-                "keypad_name":   keypad_name,
-                "action_type":   bulk_action,
-                "button_count":  str(len(self._bulk_buttons)),
+                "keypad_name":      keypad_name,
+                "raise_lower_note": self._get_raise_lower_note(),
             },
+        )
+
+    # ── Step 2 — Entity assignment ────────────────────────────────────────────
+
+    async def async_step_entities(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        configurable = self._get_configurable()
+        active = [
+            b for b in configurable
+            if self._buttons_config.get(b["number"], {}).get(CONF_ACTION_TYPE) in ACTION_TYPES_NEEDING_ENTITY
+        ]
+        keypad_name = self.config_entry.data.get("name", "Keypad")
+
+        if not active:
+            return self.async_create_entry(
+                title="",
+                data={"buttons": {str(k): v for k, v in self._buttons_config.items()}},
+            )
+
+        if user_input is not None:
+            for btn in active:
+                n = btn["number"]
+                action_type = self._buttons_config[n][CONF_ACTION_TYPE]
+                multiple = action_type in MULTI_ENTITY_ACTIONS
+                raw = user_input.get(f"button_{n}_entity", [] if multiple else "")
+                self._buttons_config[n][CONF_ACTION_TARGET] = (
+                    (raw if isinstance(raw, list) else self._normalize_target(raw))
+                    if multiple else raw
+                )
+                if action_type == ACTION_STATEFUL_SCENE:
+                    self._buttons_config[n][CONF_LED_ENTITY] = user_input.get(f"button_{n}_led", "")
+                    sg = user_input.get(f"button_{n}_scene_group", "")
+                    self._buttons_config[n]["scene_group"] = sg.strip() if isinstance(sg, str) else ""
+
+            return self.async_create_entry(
+                title="",
+                data={"buttons": {str(k): v for k, v in self._buttons_config.items()}},
+            )
+
+        schema_dict: dict = {}
+        for btn in active:
+            n = btn["number"]
+            cfg = self._buttons_config.get(n, {})
+            action_type = cfg.get(CONF_ACTION_TYPE, ACTION_NONE)
+            domains = ACTION_TYPE_DOMAINS.get(action_type, [])
+            multiple = action_type in MULTI_ENTITY_ACTIONS
+
+            schema_dict[vol.Optional(f"button_{n}_entity", default=self._default_entity(cfg, multiple))] = (
+                selector.EntitySelector(selector.EntitySelectorConfig(domain=domains, multiple=multiple))
+            )
+            if action_type == ACTION_STATEFUL_SCENE:
+                schema_dict[vol.Optional(f"button_{n}_led", default=cfg.get(CONF_LED_ENTITY, ""))] = (
+                    selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch"], multiple=False))
+                )
+                schema_dict[vol.Optional(f"button_{n}_scene_group", default=cfg.get("scene_group", ""))] = (
+                    selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT))
+                )
+
+        return self.async_show_form(
+            step_id="entities",
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={"keypad_name": keypad_name},
         )

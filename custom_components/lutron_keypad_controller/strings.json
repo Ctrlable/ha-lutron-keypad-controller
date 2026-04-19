@@ -38,44 +38,66 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Configure {name}",
-        "description": "Select a button to configure, or choose Save & Close when done.",
+      "buttons": {
+        "title": "Configure All Buttons — {keypad_name}",
+        "description": "Set a label and action type for each button. {raise_lower_note}",
         "data": {
-          "selected_button": "Button"
+          "button_1_label": "Button 1 Label",
+          "button_1_action_type": "Button 1 Action",
+          "button_2_label": "Button 2 Label",
+          "button_2_action_type": "Button 2 Action",
+          "button_3_label": "Button 3 Label",
+          "button_3_action_type": "Button 3 Action",
+          "button_4_label": "Button 4 Label",
+          "button_4_action_type": "Button 4 Action",
+          "button_5_label": "Button 5 Label",
+          "button_5_action_type": "Button 5 Action",
+          "button_6_label": "Button 6 Label",
+          "button_6_action_type": "Button 6 Action",
+          "button_7_label": "Button 7 Label",
+          "button_7_action_type": "Button 7 Action",
+          "button_8_label": "Button 8 Label",
+          "button_8_action_type": "Button 8 Action",
+          "button_9_label": "Button 9 Label",
+          "button_9_action_type": "Button 9 Action",
+          "button_10_label": "Button 10 Label",
+          "button_10_action_type": "Button 10 Action"
         }
       },
-      "button": {
-        "title": "Button {button_number} — {keypad_name}",
-        "description": "Set the label and action type for this button.",
+      "entities": {
+        "title": "Assign Entities — {keypad_name}",
+        "description": "Select the target entity for each active button.",
         "data": {
-          "label": "Button Label",
-          "action_type": "Action Type"
-        }
-      },
-      "entity": {
-        "title": "Button {button_number} — {keypad_name}",
-        "description": "Choose the target entity for **{action_type}**.",
-        "data": {
-          "action_target": "Target Entity",
-          "led_entity": "LED Indicator Entity",
-          "scene_group": "Scene Group Name"
-        }
-      },
-      "bulk": {
-        "title": "Bulk Edit — {keypad_name}",
-        "description": "Select the buttons to edit and the action type to apply to all of them.",
-        "data": {
-          "button_numbers": "Buttons to Edit",
-          "action_type": "Action Type"
-        }
-      },
-      "bulk_entity": {
-        "title": "Bulk Edit — {keypad_name}",
-        "description": "Choose the target entity to apply to {button_count} button(s) as **{action_type}**.",
-        "data": {
-          "action_target": "Target Entity",
-          "scene_group": "Scene Group Name"
+          "button_1_entity": "Button 1 Entity",
+          "button_1_led": "Button 1 LED Switch",
+          "button_1_scene_group": "Button 1 Scene Group",
+          "button_2_entity": "Button 2 Entity",
+          "button_2_led": "Button 2 LED Switch",
+          "button_2_scene_group": "Button 2 Scene Group",
+          "button_3_entity": "Button 3 Entity",
+          "button_3_led": "Button 3 LED Switch",
+          "button_3_scene_group": "Button 3 Scene Group",
+          "button_4_entity": "Button 4 Entity",
+          "button_4_led": "Button 4 LED Switch",
+          "button_4_scene_group": "Button 4 Scene Group",
+          "button_5_entity": "Button 5 Entity",
+          "button_5_led": "Button 5 LED Switch",
+          "button_5_scene_group": "Button 5 Scene Group",
+          "button_6_entity": "Button 6 Entity",
+          "button_6_led": "Button 6 LED Switch",
+          "button_6_scene_group": "Button 6 Scene Group",
+          "button_7_entity": "Button 7 Entity",
+          "button_7_led": "Button 7 LED Switch",
+          "button_7_scene_group": "Button 7 Scene Group",
+          "button_8_entity": "Button 8 Entity",
+          "button_8_led": "Button 8 LED Switch",
+          "button_8_scene_group": "Button 8 Scene Group",
+          "button_9_entity": "Button 9 Entity",
+          "button_9_led": "Button 9 LED Switch",
+          "button_9_scene_group": "Button 9 Scene Group",
+          "button_10_entity": "Button 10 Entity",
+          "button_10_led": "Button 10 LED Switch",
+          "button_10_scene_group": "Button 10 Scene Group"
         }
       }
     }
