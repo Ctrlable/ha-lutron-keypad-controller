@@ -96,6 +96,8 @@ class LutronKeypadsStatusSensor(RestoreEntity, SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        if self._controller is not None:
+            self._controller.register_state_sensor(self)
         if self._entry is not None:
             self.async_on_remove(
                 self._entry.add_update_listener(self._on_entry_updated)
@@ -163,6 +165,8 @@ class LutronKeypadsLastButtonSensor(RestoreEntity, SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        if self._controller is not None:
+            self._controller.register_state_sensor(self)
         if self._entry is not None:
             self.async_on_remove(
                 self._entry.add_update_listener(self._on_entry_updated)

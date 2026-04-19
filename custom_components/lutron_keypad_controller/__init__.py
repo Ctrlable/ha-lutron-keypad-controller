@@ -851,6 +851,13 @@ class LutronKeypadsController:
         self._led_map: dict[int, str] = {}       # btn_num → auto-discovered led entity_id
         self._button_switches: dict[int, Any] = {}  # btn_num → LutronButtonSwitch
 
+        # Press-and-hold tracking
+        self._press_tasks: dict[int, asyncio.Task] = {}  # btn_num → pending press task
+        self._ramp_dirs:   dict[int, str] = {}           # btn_num → last ramp direction
+
+        # Sensors to notify when _last_action changes
+        self._state_sensors: list = []
+
     # ── Registration ──────────────────────────────────────────────────────────
 
     @callback
@@ -866,6 +873,9 @@ class LutronKeypadsController:
             self._unsubscribe()
             self._unsubscribe = None
             _LOGGER.debug("Lutron Keypad Controller '%s' unregistered", self.name)
+        for task in self._press_tasks.values():
+            task.cancel()
+        self._press_tasks.clear()
 
     # ── Initialization ────────────────────────────────────────────────────────
 
@@ -904,6 +914,15 @@ class LutronKeypadsController:
 
     def register_button_switch(self, btn_num: int, switch: Any) -> None:
         self._button_switches[btn_num] = switch
+
+    def register_state_sensor(self, sensor: Any) -> None:
+        if sensor not in self._state_sensors:
+            self._state_sensors.append(sensor)
+
+    @callback
+    def _notify_state_sensors(self) -> None:
+        for sensor in self._state_sensors:
+            sensor.async_write_ha_state()
 
     def _update_button_switch_state(self, btn_num: int, is_on: bool) -> None:
         switch = self._button_switches.get(btn_num)
@@ -1018,9 +1037,6 @@ class LutronKeypadsController:
             data.get("action"),
         )
 
-        if data.get("action", "press") == "release":
-            return
-
         if not self._matches_event(data):
             _LOGGER.debug(
                 "'%s': ignoring event — ev serial=%s device_id=%s / "
@@ -1055,6 +1071,12 @@ class LutronKeypadsController:
             )
             return
 
+        action_event = data.get("action", "press")
+
+        if action_event == "release":
+            self._handle_release(btn_num)
+            return
+
         _LOGGER.info(
             "'%s': button %d (%s) pressed — action_type=%s",
             self.name,
@@ -1063,8 +1085,182 @@ class LutronKeypadsController:
             btn_cfg[CONF_ACTION_TYPE],
         )
 
-        # Dispatch asynchronously so the event bus callback returns immediately
-        self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
+        self.hass.async_create_task(self._handle_press(btn_num, btn_cfg))
+
+    # ── Press / release / hold-to-ramp ───────────────────────────────────────
+
+    _HOLD_THRESHOLD = 0.25   # seconds before a press becomes a hold
+    _RAMP_STEP_PCT  = 4      # brightness % per ramp tick
+    _RAMP_INTERVAL  = 0.15   # seconds between ticks
+
+    @callback
+    def _handle_release(self, btn_num: int) -> None:
+        """Cancel the pending press task on button release."""
+        task = self._press_tasks.pop(btn_num, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _handle_press(self, btn_num: int, btn_cfg: dict) -> None:
+        """Route a press event: short press → dispatch, hold → ramp."""
+        # Cancel any stale task from a previous press on this button
+        old = self._press_tasks.pop(btn_num, None)
+        if old and not old.done():
+            old.cancel()
+
+        action = btn_cfg.get(CONF_ACTION_TYPE)
+        hold_actions = {ACTION_ENTITY_TOGGLE, ACTION_STATEFUL_SCENE, ACTION_RAISE, ACTION_LOWER}
+
+        if action not in hold_actions:
+            await self._dispatch(btn_num, btn_cfg)
+            return
+
+        # Register this task so _handle_release can cancel it
+        self._press_tasks[btn_num] = asyncio.current_task()
+
+        # ── Wait for hold threshold ──────────────────────────────────────────
+        held = True
+        try:
+            await asyncio.sleep(self._HOLD_THRESHOLD)
+        except asyncio.CancelledError:
+            held = False
+
+        if not held:
+            # Released before threshold → short press
+            self._press_tasks.pop(btn_num, None)
+            await self._dispatch(btn_num, btn_cfg)
+            return
+
+        # ── Hold detected — determine ramp parameters ────────────────────────
+        if action == ACTION_RAISE:
+            direction = "up"
+            entities = self._get_last_ramp_lights()
+        elif action == ACTION_LOWER:
+            direction = "down"
+            entities = self._get_last_ramp_lights()
+        else:
+            # entity_toggle / stateful_scene: only ramp when LED is currently ON
+            if not self._is_btn_led_on(btn_num):
+                self._press_tasks.pop(btn_num, None)
+                await self._dispatch(btn_num, btn_cfg)
+                return
+            entities = self._get_btn_light_entities(btn_cfg)
+            direction = self._next_ramp_dir(btn_num)
+
+        if not entities:
+            # No rampable lights — fall back to normal dispatch
+            self._press_tasks.pop(btn_num, None)
+            await self._dispatch(btn_num, btn_cfg)
+            return
+
+        _LOGGER.debug(
+            "'%s': button %d HOLD — ramp %s on %s",
+            self.name, btn_num, direction, entities,
+        )
+
+        # ── Ramp loop (runs until task cancelled by release) ─────────────────
+        try:
+            await self._ramp_loop(btn_num, entities, direction)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._press_tasks.pop(btn_num, None)
+
+    async def _ramp_loop(
+        self, btn_num: int, entities: list[str], direction: str
+    ) -> None:
+        """Continuously step brightness up/down until cancelled."""
+        try:
+            while True:
+                all_at_limit = True
+                for eid in entities:
+                    state = self.hass.states.get(eid)
+                    if state is None:
+                        continue
+                    if state.state == "off":
+                        if direction == "up":
+                            await self.hass.services.async_call(
+                                "light", SERVICE_TURN_ON,
+                                {ATTR_ENTITY_ID: eid, "brightness_pct": 1},
+                                blocking=False,
+                            )
+                            all_at_limit = False
+                        continue
+                    current_pct = round(
+                        (state.attributes.get("brightness", 0) or 0) / 255 * 100
+                    )
+                    if direction == "up":
+                        new_pct = min(100, current_pct + self._RAMP_STEP_PCT)
+                    else:
+                        new_pct = max(0, current_pct - self._RAMP_STEP_PCT)
+                    if new_pct == current_pct:
+                        continue
+                    all_at_limit = False
+                    if direction == "down" and new_pct <= 0:
+                        await self.hass.services.async_call(
+                            "light", SERVICE_TURN_OFF,
+                            {ATTR_ENTITY_ID: eid}, blocking=False,
+                        )
+                    else:
+                        await self.hass.services.async_call(
+                            "light", SERVICE_TURN_ON,
+                            {
+                                ATTR_ENTITY_ID: eid,
+                                "brightness_pct": new_pct,
+                                "transition": self._RAMP_INTERVAL,
+                            },
+                            blocking=False,
+                        )
+                if all_at_limit:
+                    break
+                await asyncio.sleep(self._RAMP_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+
+    # ── Ramp helpers ──────────────────────────────────────────────────────────
+
+    def _next_ramp_dir(self, btn_num: int) -> str:
+        """Alternate ramp direction on each hold: first=up, then down, then up…"""
+        last = self._ramp_dirs.get(btn_num, "down")
+        direction = "up" if last == "down" else "down"
+        self._ramp_dirs[btn_num] = direction
+        return direction
+
+    def _is_btn_led_on(self, btn_num: int) -> bool:
+        sw = self._button_switches.get(btn_num)
+        if sw is not None:
+            return bool(sw.is_on)
+        led = self._get_led_entity(btn_num)
+        if led:
+            st = self.hass.states.get(led)
+            return st is not None and st.state == "on"
+        return False
+
+    def _get_btn_light_entities(self, btn_cfg: dict) -> list[str]:
+        """Return light entity_ids rampable for this button's action."""
+        action = btn_cfg.get(CONF_ACTION_TYPE)
+        if action == ACTION_ENTITY_TOGGLE:
+            return [
+                e for e in _normalize_targets(btn_cfg.get(CONF_ACTION_TARGET, []))
+                if e.startswith("light.")
+            ]
+        if action == ACTION_STATEFUL_SCENE:
+            scene_id = btn_cfg.get(CONF_ACTION_TARGET, "")
+            st = self.hass.states.get(scene_id) if scene_id else None
+            if st:
+                return [
+                    e for e in st.attributes.get("entity_id", [])
+                    if e.startswith("light.")
+                ]
+        return []
+
+    def _get_last_ramp_lights(self) -> list[str]:
+        """Return light entities from the most recent action (for raise/lower ramp)."""
+        if self._last_action is None:
+            return []
+        return [
+            e for e in self._last_action.get("entities", [])
+            if e.startswith("light.")
+        ]
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
@@ -1079,6 +1275,7 @@ class LutronKeypadsController:
         elif action == ACTION_HA_SCENE:
             await self._activate_scene(target)
             await self._write_led_entity(btn_num, True)
+            self._last_action = {"type": ACTION_HA_SCENE, "scene_id": target}
 
         elif action == ACTION_STATEFUL_SCENE:
             # LED writes handled inside _activate_stateful_scene
@@ -1121,6 +1318,11 @@ class LutronKeypadsController:
 
         else:
             _LOGGER.error("'%s': unknown action_type '%s'", self.name, action)
+            return
+
+        if self._last_action is not None:
+            self._last_action.setdefault("button", btn_num)
+        self._notify_state_sensors()
 
     # ── Action implementations ────────────────────────────────────────────────
 
