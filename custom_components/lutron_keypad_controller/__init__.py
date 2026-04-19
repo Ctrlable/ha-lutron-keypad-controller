@@ -139,6 +139,7 @@ from .const import (
     ATTR_LIGHT_DIM_STEPS,
     get_button_layout,
     get_button_list,
+    KEYPAD_GENERIC,
 )
 
 _LOGGER = logging.getLogger(__name__)
