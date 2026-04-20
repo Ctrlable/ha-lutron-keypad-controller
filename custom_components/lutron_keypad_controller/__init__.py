@@ -851,14 +851,14 @@ class LutronKeypadsController:
         self._led_map: dict[int, str] = {}       # btn_num → auto-discovered led entity_id
         self._button_switches: dict[int, Any] = {}  # btn_num → LutronButtonSwitch
 
-        # Press-and-hold tracking (call_later state machine — no async tasks)
-        self._press_times:    dict[int, float] = {}   # monotonic time of last press
-        self._release_counts: dict[int, int]   = {}   # releases seen since last press
-        self._held:           dict[int, bool]  = {}   # True while ramp is active for this button
-        self._hold_handles:   dict             = {}   # loop.call_later handle (hold threshold timer)
-        self._ramp_tasks: dict[int, asyncio.Task] = {}  # active ramp coroutine task per button
-        self._ramp_dirs:      dict[int, str]   = {}   # last ramp direction per button
-        self._ramp_end_times: dict[int, float] = {}   # time last ramp ended per button
+        # Press-and-hold tracking (synchronous call_later state machine)
+        self._press_times:     dict[int, float] = {}  # monotonic time of last press
+        self._release_counts:  dict[int, int]   = {}  # releases seen since last press
+        self._held:            dict[int, bool]  = {}  # True while hold-event ramp is active
+        self._confirm_handles: dict             = {}  # call_later handle: hold-confirm window
+        self._ramp_tasks:  dict[int, asyncio.Task] = {}  # active ramp coroutine per button
+        self._ramp_dirs:       dict[int, str]   = {}  # last ramp direction per button
+        self._ramp_end_times:  dict[int, float] = {}  # time last ramp ended per button
 
         # Sensors to notify when _last_action changes
         self._state_sensors: list = []
@@ -878,9 +878,9 @@ class LutronKeypadsController:
             self._unsubscribe()
             self._unsubscribe = None
             _LOGGER.debug("Lutron Keypad Controller '%s' unregistered", self.name)
-        for handle in self._hold_handles.values():
+        for handle in self._confirm_handles.values():
             handle.cancel()
-        self._hold_handles.clear()
+        self._confirm_handles.clear()
         for task in self._ramp_tasks.values():
             task.cancel()
         self._ramp_tasks.clear()
@@ -1099,36 +1099,42 @@ class LutronKeypadsController:
 
         self._on_press(btn_num, btn_cfg)
 
-    # ── Press / release / hold-to-ramp ───────────────────────────────────────
+    # ── Press / release / hold event ─────────────────────────────────────────
     #
-    # Lutron RA3/QSX quirk: a fake "release" fires ~10–80 ms after every press,
-    # even while the button is still held.  For a hold, a second "release" fires
-    # on actual lift.  For a tap, the single release may be the only event.
+    # Lutron RA3/QSX behaviour:
+    #   tap  : press → release¹ (<50 ms, fake) → release² (~50–150 ms, real lift)
+    #   hold : press → release¹ (<50 ms, fake) → [finger still down] → release² (on lift)
     #
-    # Strategy — pure synchronous state machine using loop.call_later:
-    #   1. On press  — cancel any pending hold timer / ramp; record press time;
-    #                  schedule _on_hold_threshold via call_later(_HOLD_THRESHOLD).
-    #   2. On release — if elapsed < _FAKE_IGNORE ms: ignore (Lutron's fake release).
-    #                   If currently ramping: cancel ramp task (finger lifted).
-    #                   Otherwise: cancel hold timer → dispatch short press.
-    #   3. _on_hold_threshold fires — enter ramp mode and start ramp task.
+    # State machine (all synchronous @callbacks — no asyncio races):
     #
-    # Because everything except the ramp body runs in synchronous @callbacks,
-    # there are no asyncio Event races and no dependency on task scheduling order.
+    #   PRESS       → cancel stale state; record time; for non-hold actions dispatch immediately.
+    #                 For hold-capable actions: wait for fake release.
+    #
+    #   RELEASE¹    → elapsed < _FAKE_WINDOW (50 ms): it's Lutron's fake release.
+    #                 Start _HOLD_CONFIRM (100 ms) timer via call_later.
+    #
+    #   RELEASE²    → arrives while confirm timer is running → TAP: cancel timer, dispatch.
+    #               → arrives while ramp is active (_held=True) → RAMP STOP: cancel ramp task.
+    #
+    #   _on_hold_event fires (confirm timer expires, no real release) → HOLD EVENT:
+    #                 start ramp task; next hold within 2s alternates direction.
 
-    _FAKE_IGNORE   = 0.08   # releases within 80 ms of press are Lutron's fake — ignored
-    _HOLD_THRESHOLD = 0.40  # seconds button must be held before ramp starts
-    _RAMP_STEP_PCT  = 4     # brightness % per ramp tick
-    _RAMP_INTERVAL  = 0.15  # seconds between ticks
+    _FAKE_WINDOW   = 0.05   # seconds — releases within this are Lutron's fake
+    _HOLD_CONFIRM  = 0.10   # seconds after fake release before hold event fires
+    _RAMP_STEP_PCT = 4      # brightness % per ramp tick
+    _RAMP_INTERVAL = 0.15   # seconds between ticks
+
+    _HOLD_ACTIONS = frozenset({
+        ACTION_ENTITY_TOGGLE, ACTION_STATEFUL_SCENE, ACTION_RAISE, ACTION_LOWER
+    })
 
     @callback
     def _on_press(self, btn_num: int, btn_cfg: dict) -> None:
-        """Synchronous press handler — sets up hold timer, cancels any stale state."""
-        # Cancel stale hold timer from a previous press
-        old_handle = self._hold_handles.pop(btn_num, None)
-        if old_handle is not None:
-            old_handle.cancel()
-        # Cancel stale ramp task
+        """Synchronous press handler."""
+        # Cancel any stale confirm timer or ramp from a previous interaction
+        old_confirm = self._confirm_handles.pop(btn_num, None)
+        if old_confirm is not None:
+            old_confirm.cancel()
         old_ramp = self._ramp_tasks.pop(btn_num, None)
         if old_ramp is not None and not old_ramp.done():
             old_ramp.cancel()
@@ -1137,63 +1143,64 @@ class LutronKeypadsController:
         self._release_counts[btn_num] = 0
         self._held[btn_num]           = False
 
-        action = btn_cfg.get(CONF_ACTION_TYPE)
-        hold_actions = {ACTION_ENTITY_TOGGLE, ACTION_STATEFUL_SCENE, ACTION_RAISE, ACTION_LOWER}
-
-        if action not in hold_actions:
+        if btn_cfg.get(CONF_ACTION_TYPE) not in self._HOLD_ACTIONS:
+            # Non-hold action: dispatch immediately on press, no gesture detection needed
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
-            return
-
-        # Schedule hold-threshold callback
-        handle = self.hass.loop.call_later(
-            self._HOLD_THRESHOLD,
-            self._on_hold_threshold,
-            btn_num,
-            btn_cfg,
-        )
-        self._hold_handles[btn_num] = handle
 
     @callback
     def _handle_release(self, btn_num: int) -> None:
-        """Synchronous release handler."""
-        now       = asyncio.get_event_loop().time()
-        elapsed   = now - self._press_times.get(btn_num, now)
-        count     = self._release_counts.get(btn_num, 0) + 1
+        """Synchronous release handler — drives the press/hold state machine."""
+        now     = asyncio.get_event_loop().time()
+        elapsed = now - self._press_times.get(btn_num, now)
+        count   = self._release_counts.get(btn_num, 0) + 1
         self._release_counts[btn_num] = count
 
-        if count == 1 and elapsed < self._FAKE_IGNORE:
-            # Lutron's immediate fake release — button likely still held; ignore.
-            _LOGGER.debug(
-                "'%s': button %d fake release ignored (elapsed=%.3fs)",
-                self.name, btn_num, elapsed,
-            )
-            return
-
         _LOGGER.debug(
-            "'%s': button %d release #%d (elapsed=%.3fs, held=%s)",
-            self.name, btn_num, count, elapsed, self._held.get(btn_num),
+            "'%s': button %d release #%d elapsed=%.3fs held=%s confirm=%s",
+            self.name, btn_num, count, elapsed,
+            self._held.get(btn_num), btn_num in self._confirm_handles,
         )
 
+        # ── Ramp is active: this release stops it ────────────────────────────
         if self._held.get(btn_num, False):
-            # Finger lifted while ramping — cancel ramp task
             ramp = self._ramp_tasks.pop(btn_num, None)
             if ramp is not None and not ramp.done():
                 ramp.cancel()
             self._held.pop(btn_num, None)
             self._ramp_end_times[btn_num] = now
-        else:
-            # Short press — cancel hold timer and dispatch
-            handle = self._hold_handles.pop(btn_num, None)
-            if handle is not None:
-                handle.cancel()
+            return
+
+        # ── Fake release: start hold-confirm window ──────────────────────────
+        if count == 1 and elapsed < self._FAKE_WINDOW:
             btn_cfg = self._buttons.get(btn_num)
-            if btn_cfg is not None:
-                self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
+            if btn_cfg is not None and btn_cfg.get(CONF_ACTION_TYPE) in self._HOLD_ACTIONS:
+                handle = self.hass.loop.call_later(
+                    self._HOLD_CONFIRM,
+                    self._on_hold_event,
+                    btn_num,
+                )
+                self._confirm_handles[btn_num] = handle
+            return
+
+        # ── Real release: either confirms tap or is a late sole release ───────
+        confirm = self._confirm_handles.pop(btn_num, None)
+        if confirm is not None:
+            confirm.cancel()
+        # Dispatch tap for hold-capable actions (non-hold actions already dispatched on press)
+        btn_cfg = self._buttons.get(btn_num)
+        if btn_cfg is not None and btn_cfg.get(CONF_ACTION_TYPE) in self._HOLD_ACTIONS:
+            self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
 
     @callback
-    def _on_hold_threshold(self, btn_num: int, btn_cfg: dict) -> None:
-        """Fires when hold threshold elapses — determine ramp params and start ramp."""
-        self._hold_handles.pop(btn_num, None)
+    def _on_hold_event(self, btn_num: int) -> None:
+        """Internal hold event — fires _HOLD_CONFIRM seconds after the fake release
+        with no real release in between.  Routes to ramp or dispatch based on context.
+        """
+        self._confirm_handles.pop(btn_num, None)
+
+        btn_cfg = self._buttons.get(btn_num)
+        if btn_cfg is None:
+            return
 
         action = btn_cfg.get(CONF_ACTION_TYPE)
 
@@ -1204,10 +1211,10 @@ class LutronKeypadsController:
             direction = "down"
             entities  = self._get_last_ramp_lights()
         else:
-            # entity_toggle / stateful_scene: only ramp when LED is ON
+            # entity_toggle / stateful_scene: only ramp when LED is currently ON
             if not self._is_btn_led_on(btn_num):
                 _LOGGER.debug(
-                    "'%s': button %d hold — LED off, dispatching instead of ramping",
+                    "'%s': button %d hold event — LED off, dispatching instead",
                     self.name, btn_num,
                 )
                 self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
@@ -1217,14 +1224,14 @@ class LutronKeypadsController:
 
         if not entities:
             _LOGGER.debug(
-                "'%s': button %d hold — no rampable lights, dispatching",
+                "'%s': button %d hold event — no rampable lights, dispatching",
                 self.name, btn_num,
             )
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
             return
 
-        _LOGGER.debug(
-            "'%s': button %d HOLD — ramp %s on %s",
+        _LOGGER.info(
+            "'%s': button %d HOLD EVENT — ramp %s on %s",
             self.name, btn_num, direction, entities,
         )
         self._held[btn_num] = True
@@ -1239,7 +1246,7 @@ class LutronKeypadsController:
         entities: list[str],
         direction: str,
     ) -> None:
-        """Step brightness up/down until cancelled (by _handle_release)."""
+        """Step brightness up/down until cancelled by _handle_release."""
         try:
             while True:
                 all_at_limit = True
@@ -1259,10 +1266,11 @@ class LutronKeypadsController:
                     current_pct = round(
                         (state.attributes.get("brightness", 0) or 0) / 255 * 100
                     )
-                    if direction == "up":
-                        new_pct = min(100, current_pct + self._RAMP_STEP_PCT)
-                    else:
-                        new_pct = max(0, current_pct - self._RAMP_STEP_PCT)
+                    new_pct = (
+                        min(100, current_pct + self._RAMP_STEP_PCT)
+                        if direction == "up"
+                        else max(0, current_pct - self._RAMP_STEP_PCT)
+                    )
                     if new_pct == current_pct:
                         continue
                     all_at_limit = False
