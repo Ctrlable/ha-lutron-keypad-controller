@@ -1110,16 +1110,20 @@ class LutronKeypadsController:
     #   PRESS       → cancel stale state; record time; for non-hold actions dispatch immediately.
     #                 For hold-capable actions: wait for fake release.
     #
-    #   RELEASE¹    → elapsed < _FAKE_WINDOW (50 ms): it's Lutron's fake release.
+    #   RELEASE¹    → elapsed < _FAKE_WINDOW (25 ms): it's Lutron's hardware fake.
     #                 Start _HOLD_CONFIRM (300 ms) timer via call_later.
+    #               → elapsed ≥ _FAKE_WINDOW: real finger lift → TAP: dispatch immediately.
     #
     #   RELEASE²    → arrives while confirm timer is running → TAP: cancel timer, dispatch.
-    #               → arrives while ramp is active (_held=True) → RAMP STOP: cancel ramp task.
+    #               → arrives while ramp/_held is active → RAMP STOP: cancel ramp task.
     #
     #   _on_hold_event fires (confirm timer expires, no real release) → HOLD EVENT:
     #                 start ramp task; next hold within 2s alternates direction.
+    #
+    # NOTE: Lutron's automatic fake release is consistently < 20 ms.  A finger lift
+    # takes ≥ 30 ms even for the quickest human taps, so 25 ms cleanly separates them.
 
-    _FAKE_WINDOW   = 0.05   # seconds — releases within this are Lutron's fake
+    _FAKE_WINDOW   = 0.025  # seconds — releases within this are Lutron's hardware fake
     _HOLD_CONFIRM  = 0.30   # seconds after fake release before hold event fires
     _RAMP_STEP_PCT = 4      # brightness % per ramp tick
     _RAMP_INTERVAL = 0.15   # seconds between ticks
@@ -1217,6 +1221,8 @@ class LutronKeypadsController:
                     "'%s': button %d hold event — LED off, dispatching instead",
                     self.name, btn_num,
                 )
+                # Mark held so the eventual real-release won't dispatch a second time.
+                self._held[btn_num] = True
                 self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
                 return
             entities  = self._get_btn_light_entities(btn_cfg)
@@ -1227,6 +1233,7 @@ class LutronKeypadsController:
                 "'%s': button %d hold event — no rampable lights, dispatching",
                 self.name, btn_num,
             )
+            self._held[btn_num] = True
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
             return
 
