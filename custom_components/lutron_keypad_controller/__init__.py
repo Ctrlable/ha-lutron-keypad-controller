@@ -1653,39 +1653,81 @@ class LutronKeypadsController:
             await self._write_led_entity(btn_num, True)
 
         elif action == ACTION_ENTITY_TOGGLE:
-            # Read state BEFORE toggling — HA state propagation is async even
-            # with blocking=True, so reading after the call returns the old value.
             entity_ids = _normalize_targets(target)
-            pre_on = False
-            if entity_ids:
-                pre_state = self.hass.states.get(entity_ids[0])
-                pre_on = pre_state is not None and pre_state.state not in (
-                    "off", "closed", "unavailable", "unknown", "none"
-                )
             target_bri = int(btn_cfg.get(CONF_TARGET_BRIGHTNESS) or 0)
             target_cct = int(btn_cfg.get(CONF_TARGET_COLOR_TEMP) or 0)
-            if not pre_on and (target_bri > 0 or target_cct > 0):
-                # Turn on at configured target state instead of plain toggle
-                for eid in entity_ids:
-                    if eid.startswith("light."):
-                        svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
-                        if target_bri > 0:
-                            svc_data["brightness_pct"] = target_bri
-                        if target_cct > 0:
-                            svc_data["color_temp_kelvin"] = target_cct
-                        await self.hass.services.async_call(
-                            "light", SERVICE_TURN_ON, svc_data, blocking=True
-                        )
-                    else:
+            led_mode   = btn_cfg.get(CONF_LED_MODE, LED_MODE_ROOM)
+
+            if led_mode == LED_MODE_SCENE:
+                # Scene Mode: toggle axis is whether the scene is currently active
+                # (LED state), NOT whether the entity is physically on.
+                # Lights on but at wrong level → LED off → button must ACTIVATE
+                # the scene, not turn everything off.
+                if self._is_btn_led_on(btn_num):
+                    # Scene active → deactivate: turn everything off
+                    for eid in entity_ids:
                         domain = eid.split(".")[0]
                         await self.hass.services.async_call(
-                            domain, SERVICE_TURN_ON, {ATTR_ENTITY_ID: eid}, blocking=True
+                            domain, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: eid},
+                            blocking=True,
                         )
-                self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
-                await self._write_led_entity(btn_num, True)
+                    self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
+                    await self._write_led_entity(btn_num, False)
+                else:
+                    # Scene not active → activate: apply configured target settings.
+                    # LED is NOT written here — entity tracking sets it ON once the
+                    # light actually reaches the target level.
+                    for eid in entity_ids:
+                        if eid.startswith("light."):
+                            svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
+                            if target_bri > 0:
+                                svc_data["brightness_pct"] = target_bri
+                            if target_cct > 0:
+                                svc_data["color_temp_kelvin"] = target_cct
+                            await self.hass.services.async_call(
+                                "light", SERVICE_TURN_ON, svc_data, blocking=True,
+                            )
+                        else:
+                            domain = eid.split(".")[0]
+                            await self.hass.services.async_call(
+                                domain, SERVICE_TURN_ON, {ATTR_ENTITY_ID: eid},
+                                blocking=True,
+                            )
+                    self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
+
             else:
-                await self._entity_toggle(target)
-                await self._write_led_entity(btn_num, not pre_on)
+                # Room Mode: standard pre_on toggle logic.
+                # Read state BEFORE toggling — HA state propagation is async even
+                # with blocking=True, so reading after the call returns the old value.
+                pre_on = False
+                if entity_ids:
+                    pre_state = self.hass.states.get(entity_ids[0])
+                    pre_on = pre_state is not None and pre_state.state not in (
+                        "off", "closed", "unavailable", "unknown", "none"
+                    )
+                if not pre_on and (target_bri > 0 or target_cct > 0):
+                    # Off + targets configured → turn on at target state
+                    for eid in entity_ids:
+                        if eid.startswith("light."):
+                            svc_data = {ATTR_ENTITY_ID: eid}
+                            if target_bri > 0:
+                                svc_data["brightness_pct"] = target_bri
+                            if target_cct > 0:
+                                svc_data["color_temp_kelvin"] = target_cct
+                            await self.hass.services.async_call(
+                                "light", SERVICE_TURN_ON, svc_data, blocking=True,
+                            )
+                        else:
+                            domain = eid.split(".")[0]
+                            await self.hass.services.async_call(
+                                domain, SERVICE_TURN_ON, {ATTR_ENTITY_ID: eid},
+                                blocking=True,
+                            )
+                    self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
+                    await self._write_led_entity(btn_num, True)
+                else:
+                    await self._entity_toggle(target)
+                    await self._write_led_entity(btn_num, not pre_on)
 
         elif action == ACTION_COVER_CYCLE:
             await self._cover_cycle(btn_num, target)
