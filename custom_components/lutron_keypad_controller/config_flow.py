@@ -14,6 +14,7 @@ import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
+    ACTION_ENTITY_TOGGLE,
     CONF_DEVICE_SERIAL,
     CONF_DEVICE_NAME,
     CONF_AREA_NAME,
@@ -22,6 +23,9 @@ from .const import (
     CONF_ACTION_TARGET,
     CONF_LED_ENTITY,
     CONF_LED_INVERT,
+    CONF_LED_MODE,
+    LED_MODE_ROOM,
+    LED_MODE_SCENE,
     ACTION_STATEFUL_SCENE,
     KEYPAD_SEETOUCH,
     KEYPAD_SEETOUCH_HYBRID,
@@ -615,6 +619,8 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
                     if multiple else raw
                 )
                 self._buttons_config[n][CONF_LED_INVERT] = bool(user_input.get(f"button_{n}_led_invert", False))
+                if action_type == ACTION_ENTITY_TOGGLE:
+                    self._buttons_config[n][CONF_LED_MODE] = user_input.get(f"button_{n}_led_mode", LED_MODE_ROOM)
                 if action_type == ACTION_STATEFUL_SCENE:
                     self._buttons_config[n][CONF_LED_ENTITY] = user_input.get(f"button_{n}_led", "")
                     sg = user_input.get(f"button_{n}_scene_group", "")
@@ -636,6 +642,16 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
             schema_dict[vol.Optional(f"button_{n}_entity", default=self._default_entity(cfg, multiple))] = (
                 selector.EntitySelector(selector.EntitySelectorConfig(domain=domains, multiple=multiple))
             )
+            if action_type == ACTION_ENTITY_TOGGLE:
+                schema_dict[vol.Optional(f"button_{n}_led_mode", default=cfg.get(CONF_LED_MODE, LED_MODE_ROOM))] = (
+                    selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=[
+                            {"value": LED_MODE_ROOM,  "label": "Room Mode (any entity on → LED on)"},
+                            {"value": LED_MODE_SCENE, "label": "Scene Mode (all entities on → LED on)"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    ))
+                )
             if action_type == ACTION_STATEFUL_SCENE:
                 schema_dict[vol.Optional(f"button_{n}_led", default=cfg.get(CONF_LED_ENTITY, ""))] = (
                     selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch"], multiple=False))
