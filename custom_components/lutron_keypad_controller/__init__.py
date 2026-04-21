@@ -1461,18 +1461,6 @@ class LutronKeypadsController:
                 self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
                 return
 
-            # Scene Mode entity_toggle: hold = toggle off (no ramp — no target level
-            # was configured, so there is nothing meaningful to ramp toward or away from).
-            if (action == ACTION_ENTITY_TOGGLE
-                    and btn_cfg.get(CONF_LED_MODE, LED_MODE_ROOM) == LED_MODE_SCENE):
-                _LOGGER.debug(
-                    "'%s': button %d hold event — Scene Mode toggle, dispatching off",
-                    self.name, btn_num,
-                )
-                self._held[btn_num] = True
-                self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
-                return
-
             entities  = self._get_btn_light_entities(btn_cfg)
             direction = self._next_ramp_dir(btn_num, entities)
 
