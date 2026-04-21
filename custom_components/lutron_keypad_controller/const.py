@@ -18,9 +18,11 @@ CONF_BUTTON_LABEL    = "label"
 CONF_ACTION_TYPE     = "action_type"
 CONF_ACTION_TARGET   = "action_target"
 CONF_ACTION_PARAMS   = "action_params"
-CONF_LED_ENTITY      = "led_entity"
-CONF_LED_INVERT      = "led_invert"
-CONF_LED_MODE        = "led_mode"
+CONF_LED_ENTITY        = "led_entity"
+CONF_LED_INVERT        = "led_invert"
+CONF_LED_MODE          = "led_mode"
+CONF_TARGET_BRIGHTNESS = "target_brightness"   # 1-100 %, 0 = not set
+CONF_TARGET_COLOR_TEMP = "target_color_temp"   # Kelvin, 0 = not set
 
 # LED mode values (entity_toggle buttons)
 LED_MODE_ROOM  = "room"   # ON when ANY assigned entity is on

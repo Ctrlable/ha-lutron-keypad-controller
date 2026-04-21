@@ -116,6 +116,8 @@ from .const import (
     CONF_LED_ENTITY,
     CONF_LED_INVERT,
     CONF_LED_MODE,
+    CONF_TARGET_BRIGHTNESS,
+    CONF_TARGET_COLOR_TEMP,
     LED_MODE_ROOM,
     LED_MODE_SCENE,
     CONF_DEVICE_SERIAL,
@@ -245,6 +247,10 @@ def _build_buttons_from_options(buttons_options: dict) -> list[dict]:
             btn_cfg["scene_group"] = btn_data["scene_group"]
         if btn_data.get(CONF_LED_MODE):
             btn_cfg[CONF_LED_MODE] = btn_data[CONF_LED_MODE]
+        if btn_data.get(CONF_TARGET_BRIGHTNESS):
+            btn_cfg[CONF_TARGET_BRIGHTNESS] = int(btn_data[CONF_TARGET_BRIGHTNESS])
+        if btn_data.get(CONF_TARGET_COLOR_TEMP):
+            btn_cfg[CONF_TARGET_COLOR_TEMP] = int(btn_data[CONF_TARGET_COLOR_TEMP])
         result.append(btn_cfg)
     return result
 
@@ -856,8 +862,12 @@ class LutronKeypadsController:
         self._led_map: dict[int, str] = {}       # btn_num → auto-discovered led entity_id
         self._button_switches: dict[int, Any] = {}  # btn_num → LutronButtonSwitch
         # LEAP button number → configured button number
-        # Events use leap_button_number; config stores button_number (can differ for raise/lower)
+        # Events use leap_button_number; config stores button_number (can differ for raise/lower).
+        # Seeded from entry.data["leap_button_map"] stored at config time (most reliable path).
         self._leap_btn_map: dict[int, int] = {}
+        if config_entry is not None:
+            stored = config_entry.data.get("leap_button_map", {})
+            self._leap_btn_map = {int(k): v for k, v in stored.items()}
 
         # Press-and-hold tracking (synchronous call_later state machine)
         self._press_times:     dict[int, float] = {}  # monotonic time of last press
@@ -928,13 +938,24 @@ class LutronKeypadsController:
     async def _build_leap_btn_map(self) -> None:
         """Map LEAP button numbers (used in events) to configured button numbers.
 
-        button_devices stores the canonical button_number (e.g. 7 for raise).
-        LEAP events fire with leap_button_number (e.g. 18).  Without this map
-        the event handler looks up btn_num=18, finds nothing, and ignores the press.
+        Prefer the map stored in entry.data (built at config time when the bridge
+        is guaranteed available).  Fall back to a runtime bridge query only when
+        the stored map is absent (e.g. entries created before v3.5.31).
         """
+        if self._leap_btn_map:
+            _LOGGER.debug(
+                "'%s': _build_leap_btn_map — using stored map %s",
+                self.name, self._leap_btn_map,
+            )
+            return
+
         bridge = self._get_lutron_bridge()
         if bridge is None:
-            _LOGGER.debug("'%s': _build_leap_btn_map — lutron_caseta bridge not found", self.name)
+            _LOGGER.warning(
+                "'%s': _build_leap_btn_map — lutron_caseta bridge not found; "
+                "raise/lower LEAP remapping unavailable. Re-add the entry to fix permanently.",
+                self.name,
+            )
             return
 
         button_devices: dict = getattr(bridge, "button_devices", None) or {}
@@ -1045,13 +1066,36 @@ class LutronKeypadsController:
 
     @callback
     def _update_scene_mode_led(self, btn_num: int, entities: list[str]) -> None:
-        """Scene Mode: LED on only when ALL assigned entities are on, off otherwise."""
-        all_on = bool(entities) and all(
-            (st := self.hass.states.get(eid)) is not None
-            and st.state not in ("off", "closed", "unavailable", "unknown", "none")
-            for eid in entities
-        )
-        self._update_button_switch_state(btn_num, all_on)
+        """Scene Mode: LED on when ALL entities are on AND at their configured target state.
+
+        If no target brightness/CCT is configured, "on at any level" satisfies the check.
+        """
+        btn_cfg = self._buttons.get(btn_num, {})
+        target_bri = int(btn_cfg.get(CONF_TARGET_BRIGHTNESS) or 0)
+        target_cct = int(btn_cfg.get(CONF_TARGET_COLOR_TEMP) or 0)
+
+        def _at_target(eid: str) -> bool:
+            st = self.hass.states.get(eid)
+            if st is None or st.state in ("off", "closed", "unavailable", "unknown", "none"):
+                return False
+            if not eid.startswith("light."):
+                return True  # non-light: just being "on" satisfies scene
+            if target_bri > 0:
+                current_pct = round((st.attributes.get("brightness", 0) or 0) / 255 * 100)
+                if abs(current_pct - target_bri) > 5:
+                    return False
+            if target_cct > 0:
+                current_k = st.attributes.get("color_temp_kelvin")
+                if current_k is None:
+                    mireds = st.attributes.get("color_temp")
+                    if mireds:
+                        current_k = round(1_000_000 / mireds)
+                if current_k is not None and abs(int(current_k) - target_cct) > 100:
+                    return False
+            return True
+
+        all_match = bool(entities) and all(_at_target(eid) for eid in entities)
+        self._update_button_switch_state(btn_num, all_match)
 
     def _setup_entity_state_tracking(self) -> None:
         """Subscribe to state changes for entity_toggle buttons (Room/Scene Mode LED sync)."""
@@ -1576,7 +1620,6 @@ class LutronKeypadsController:
         elif action == ACTION_ENTITY_TOGGLE:
             # Read state BEFORE toggling — HA state propagation is async even
             # with blocking=True, so reading after the call returns the old value.
-            # Inverting the pre-toggle state gives the correct post-toggle state.
             entity_ids = _normalize_targets(target)
             pre_on = False
             if entity_ids:
@@ -1584,8 +1627,30 @@ class LutronKeypadsController:
                 pre_on = pre_state is not None and pre_state.state not in (
                     "off", "closed", "unavailable", "unknown", "none"
                 )
-            await self._entity_toggle(target)
-            await self._write_led_entity(btn_num, not pre_on)
+            target_bri = int(btn_cfg.get(CONF_TARGET_BRIGHTNESS) or 0)
+            target_cct = int(btn_cfg.get(CONF_TARGET_COLOR_TEMP) or 0)
+            if not pre_on and (target_bri > 0 or target_cct > 0):
+                # Turn on at configured target state instead of plain toggle
+                for eid in entity_ids:
+                    if eid.startswith("light."):
+                        svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
+                        if target_bri > 0:
+                            svc_data["brightness_pct"] = target_bri
+                        if target_cct > 0:
+                            svc_data["color_temp_kelvin"] = target_cct
+                        await self.hass.services.async_call(
+                            "light", SERVICE_TURN_ON, svc_data, blocking=True
+                        )
+                    else:
+                        domain = eid.split(".")[0]
+                        await self.hass.services.async_call(
+                            domain, SERVICE_TURN_ON, {ATTR_ENTITY_ID: eid}, blocking=True
+                        )
+                self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
+                await self._write_led_entity(btn_num, True)
+            else:
+                await self._entity_toggle(target)
+                await self._write_led_entity(btn_num, not pre_on)
 
         elif action == ACTION_COVER_CYCLE:
             await self._cover_cycle(btn_num, target)

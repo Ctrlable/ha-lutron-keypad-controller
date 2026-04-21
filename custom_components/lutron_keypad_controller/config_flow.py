@@ -24,6 +24,8 @@ from .const import (
     CONF_LED_ENTITY,
     CONF_LED_INVERT,
     CONF_LED_MODE,
+    CONF_TARGET_BRIGHTNESS,
+    CONF_TARGET_COLOR_TEMP,
     LED_MODE_ROOM,
     LED_MODE_SCENE,
     ACTION_STATEFUL_SCENE,
@@ -235,12 +237,25 @@ def _detect_button_layout(
 
     raise_btn: int | None = None
     lower_btn: int | None = None
-    button_names: dict[str, str] = {}  # str(btn_num) → engraving label
+    button_names: dict[str, str] = {}    # str(btn_num) → engraving label
+    leap_button_map: dict[str, int] = {} # str(leap_num) → configured button_number
 
     for bd in matching:
         raw_name = bd.get("name", "")
         name_lc  = raw_name.lower()
-        bnum = _resolve_btn_num(bd)
+        bnum = _resolve_btn_num(bd)  # prefers button_number over leap_button_number
+
+        # Build leap→configured map so the controller can route events without
+        # needing to re-query the bridge at runtime.
+        leap_raw = bd.get("leap_button_number")
+        if bnum is not None and leap_raw is not None:
+            try:
+                leap_int = int(leap_raw)
+                if leap_int != bnum:
+                    leap_button_map[str(leap_int)] = bnum
+            except (TypeError, ValueError):
+                pass
+
         if bnum is None:
             continue
         if name_lc.endswith((" raise", "-raise", " up", "-up")):
@@ -254,8 +269,10 @@ def _detect_button_layout(
     configurable = [n for n in button_numbers if n not in (raise_btn, lower_btn)]
 
     _LOGGER.debug(
-        "Detected %d button(s) for serial %s: configurable=%s raise=%s lower=%s names=%s",
-        len(button_numbers), serial, configurable, raise_btn, lower_btn, button_names,
+        "Detected %d button(s) for serial %s: configurable=%s raise=%s lower=%s "
+        "names=%s leap_map=%s",
+        len(button_numbers), serial, configurable, raise_btn, lower_btn,
+        button_names, leap_button_map,
     )
     return {
         "button_numbers":       button_numbers,
@@ -263,6 +280,7 @@ def _detect_button_layout(
         "raise_button":         raise_btn,
         "lower_button":         lower_btn,
         "button_names":         button_names,
+        "leap_button_map":      leap_button_map,
     }
 
 
@@ -621,6 +639,8 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
                 self._buttons_config[n][CONF_LED_INVERT] = bool(user_input.get(f"button_{n}_led_invert", False))
                 if action_type == ACTION_ENTITY_TOGGLE:
                     self._buttons_config[n][CONF_LED_MODE] = user_input.get(f"button_{n}_led_mode", LED_MODE_ROOM)
+                    self._buttons_config[n][CONF_TARGET_BRIGHTNESS] = int(user_input.get(f"button_{n}_target_brightness") or 0)
+                    self._buttons_config[n][CONF_TARGET_COLOR_TEMP] = int(user_input.get(f"button_{n}_target_color_temp") or 0)
                 if action_type == ACTION_STATEFUL_SCENE:
                     self._buttons_config[n][CONF_LED_ENTITY] = user_input.get(f"button_{n}_led", "")
                     sg = user_input.get(f"button_{n}_scene_group", "")
@@ -643,11 +663,25 @@ class LutronKeypadsOptionsFlow(config_entries.OptionsFlow):
                 selector.EntitySelector(selector.EntitySelectorConfig(domain=domains, multiple=multiple))
             )
             if action_type == ACTION_ENTITY_TOGGLE:
+                schema_dict[vol.Optional(f"button_{n}_target_brightness", default=cfg.get(CONF_TARGET_BRIGHTNESS, 0) or 0)] = (
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=0, max=100, step=1,
+                        unit_of_measurement="%",
+                        mode="slider",
+                    ))
+                )
+                schema_dict[vol.Optional(f"button_{n}_target_color_temp", default=cfg.get(CONF_TARGET_COLOR_TEMP, 0) or 0)] = (
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=0, max=10000, step=100,
+                        unit_of_measurement="K",
+                        mode="box",
+                    ))
+                )
                 schema_dict[vol.Optional(f"button_{n}_led_mode", default=cfg.get(CONF_LED_MODE, LED_MODE_ROOM))] = (
                     selector.SelectSelector(selector.SelectSelectorConfig(
                         options=[
-                            {"value": LED_MODE_ROOM,  "label": "Room Mode (any entity on → LED on)"},
-                            {"value": LED_MODE_SCENE, "label": "Scene Mode (all entities on → LED on)"},
+                            {"value": LED_MODE_ROOM,  "label": "Room Mode — LED on when any entity is on"},
+                            {"value": LED_MODE_SCENE, "label": "Scene Mode — LED on when all entities match target"},
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     ))
