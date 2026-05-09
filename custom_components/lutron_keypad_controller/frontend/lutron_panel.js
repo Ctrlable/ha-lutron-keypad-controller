@@ -69,9 +69,10 @@ const ACTION_TYPES = {
 
 // ── LED Logic options ─────────────────────────────────────────────
 const LED_LOGIC = {
-  room:  "Room",
-  scene: "Scene",
-  none:  "No Integration",
+  room:    "Room",
+  pathway: "Pathway",
+  scene:   "Scene",
+  none:    "No Integration",
 };
 
 // ── Entity-domain display labels ──────────────────────────────────

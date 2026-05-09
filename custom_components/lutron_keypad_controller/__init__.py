@@ -125,6 +125,7 @@ from .const import (
     CONF_TARGET_COLOR_TEMP,
     CONF_ENTITY_SETTINGS,
     LED_MODE_ROOM,
+    LED_MODE_PATHWAY,
     LED_MODE_SCENE,
     CONF_DEVICE_SERIAL,
     CONF_DEVICE_NAME,
@@ -1496,6 +1497,8 @@ class LutronKeypadsController:
         mode = btn_cfg.get(CONF_LED_MODE, LED_MODE_ROOM)
         if mode == LED_MODE_SCENE:
             self._update_scene_mode_led(btn_num, entities)
+        elif mode == LED_MODE_PATHWAY:
+            self._update_pathway_mode_led(btn_num, entities)
         else:
             self._update_room_mode_led(btn_num, entities)
 
@@ -1509,6 +1512,17 @@ class LutronKeypadsController:
         )
         self._update_button_switch_state(btn_num, any_on)
         self.hass.async_create_task(self._write_led_entity(btn_num, any_on))
+
+    @callback
+    def _update_pathway_mode_led(self, btn_num: int, entities: list[str]) -> None:
+        """Pathway Mode: LED on when ALL assigned entities are on at any level."""
+        all_on = bool(entities) and all(
+            (st := self.hass.states.get(eid)) is not None
+            and st.state not in ("off", "closed", "unavailable", "unknown", "none")
+            for eid in entities
+        )
+        self._update_button_switch_state(btn_num, all_on)
+        self.hass.async_create_task(self._write_led_entity(btn_num, all_on))
 
     @callback
     def _update_scene_mode_led(self, btn_num: int, entities: list[str]) -> None:

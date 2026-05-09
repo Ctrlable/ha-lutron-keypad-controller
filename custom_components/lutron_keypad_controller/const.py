@@ -26,8 +26,9 @@ CONF_TARGET_COLOR_TEMP = "target_color_temp"   # Kelvin, 0 = not set (legacy glo
 CONF_ENTITY_SETTINGS   = "entity_settings"     # per-entity overrides: {entity_id: {brightness, color_temp, hs_color}}
 
 # LED mode values (entity_toggle buttons)
-LED_MODE_ROOM  = "room"   # ON when ANY assigned entity is on
-LED_MODE_SCENE = "scene"  # ON when ALL assigned entities are on
+LED_MODE_ROOM    = "room"     # ON when ANY assigned entity is on (at any level)
+LED_MODE_PATHWAY = "pathway"  # ON when ALL assigned entities are on (at any level)
+LED_MODE_SCENE   = "scene"    # ON when ALL assigned entities are on at their exact target levels
 
 # ── Keypad models ─────────────────────────────────────────────────────────────
 KEYPAD_SEETOUCH          = "seetouch"
