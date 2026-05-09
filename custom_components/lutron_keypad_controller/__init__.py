@@ -2230,19 +2230,8 @@ class LutronKeypadsController:
                             ent_hs   = ent_cfg.get("hs_color")
                             ent_fade = float(ent_cfg.get("fade") or 0)
                             ent_dly  = float(ent_cfg.get("delay") or 0)
-                            svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
-                            if ent_bri > 0:
-                                svc_data["brightness_pct"] = ent_bri
-                            if ent_cct > 0:
-                                svc_data["color_temp_kelvin"] = ent_cct
-                            if ent_hs:
-                                svc_data["hs_color"] = ent_hs
-                            if ent_fade > 0:
-                                svc_data["transition"] = ent_fade
-                            if ent_dly > 0:
-                                await asyncio.sleep(ent_dly)
-                            await self.hass.services.async_call(
-                                "light", SERVICE_TURN_ON, svc_data, blocking=True,
+                            await self._apply_light_settings(
+                                eid, ent_bri, ent_cct, ent_hs, ent_fade, ent_dly
                             )
                         else:
                             domain = eid.split(".")[0]
@@ -2278,19 +2267,8 @@ class LutronKeypadsController:
                             ent_hs   = ent_cfg.get("hs_color")
                             ent_fade = float(ent_cfg.get("fade") or 0)
                             ent_dly  = float(ent_cfg.get("delay") or 0)
-                            svc_data = {ATTR_ENTITY_ID: eid}
-                            if ent_bri > 0:
-                                svc_data["brightness_pct"] = ent_bri
-                            if ent_cct > 0:
-                                svc_data["color_temp_kelvin"] = ent_cct
-                            if ent_hs:
-                                svc_data["hs_color"] = ent_hs
-                            if ent_fade > 0:
-                                svc_data["transition"] = ent_fade
-                            if ent_dly > 0:
-                                await asyncio.sleep(ent_dly)
-                            await self.hass.services.async_call(
-                                "light", SERVICE_TURN_ON, svc_data, blocking=True,
+                            await self._apply_light_settings(
+                                eid, ent_bri, ent_cct, ent_hs, ent_fade, ent_dly
                             )
                         else:
                             domain = eid.split(".")[0]
@@ -2345,6 +2323,47 @@ class LutronKeypadsController:
         self._notify_state_sensors()
 
     # ── Action implementations ────────────────────────────────────────────────
+
+    async def _apply_light_settings(
+        self,
+        eid: str,
+        bri: int,
+        cct: int,
+        hs_color: Any = None,
+        fade: float = 0,
+        delay: float = 0,
+    ) -> None:
+        """Call light.turn_on with brightness, CCT, and/or color.
+
+        Some tunable-white fixtures (e.g., Lumaris via Caseta) ignore brightness_pct
+        when color_temp_kelvin is included in the same call because CCT and level travel
+        on separate LEAP command paths.  Sending them as two sequential blocking calls
+        — CCT first, then brightness — ensures both are applied regardless of firmware.
+        """
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if bri > 0 and cct > 0:
+            # CCT call — turns the light on at the target colour temperature
+            cct_data: dict[str, Any] = {ATTR_ENTITY_ID: eid, "color_temp_kelvin": cct}
+            if fade > 0:
+                cct_data["transition"] = fade
+            await self.hass.services.async_call("light", SERVICE_TURN_ON, cct_data, blocking=True)
+            # Brightness call — corrects any level reset caused by the CCT command
+            bri_data: dict[str, Any] = {ATTR_ENTITY_ID: eid, "brightness_pct": bri}
+            if fade > 0:
+                bri_data["transition"] = fade
+            await self.hass.services.async_call("light", SERVICE_TURN_ON, bri_data, blocking=True)
+        else:
+            svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
+            if bri > 0:
+                svc_data["brightness_pct"] = bri
+            if cct > 0:
+                svc_data["color_temp_kelvin"] = cct
+            if hs_color:
+                svc_data["hs_color"] = hs_color
+            if fade > 0:
+                svc_data["transition"] = fade
+            await self.hass.services.async_call("light", SERVICE_TURN_ON, svc_data, blocking=True)
 
     async def _activate_scene(self, scene_id: str) -> None:
         """Activate a plain HA scene."""
