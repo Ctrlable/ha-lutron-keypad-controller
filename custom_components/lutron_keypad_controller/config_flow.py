@@ -125,7 +125,9 @@ def _infer_keypad_type(device_type: str) -> str:
     lower = device_type.lower()
     for keyword, kp_type in LUTRON_TYPE_FUZZY:
         if keyword in lower:
+            _LOGGER.debug("Fuzzy-matched device type %r → %s", device_type, kp_type)
             return kp_type
+    _LOGGER.warning("Unrecognized Lutron device type %r — falling back to generic keypad", device_type)
     return KEYPAD_GENERIC
 
 
@@ -227,47 +229,12 @@ _RAISE_NAME_RE = _re_cf.compile(r"\braise\b", _re_cf.IGNORECASE)
 _LOWER_NAME_RE = _re_cf.compile(r"\blower\b", _re_cf.IGNORECASE)
 
 
-def _detect_button_layout(
-    hass: HomeAssistant,
-    serial: str,
-    keypad_type: str,
-    device_name: str = "",
-    area_name: str = "",
-    device_id: str = "",
+def _build_layout_from_button_devices(
+    candidates: list[dict], area_name: str, device_name: str
 ) -> dict:
-    """Query bridge.button_devices for the actual buttons on this device.
-
-    Searches every loaded lutron_caseta bridge so the correct bridge is found
-    in multi-bridge deployments (e.g. Caseta Pro + RA3 on the same HA instance).
-
-    Returns a dict with button_numbers / configurable_buttons / raise_button /
-    lower_button / button_names to be stored in config entry data.
-    Returns {} on failure so the caller falls back to the family-based count.
-    """
-    matching: list[dict] = []
-    for bridge in _iter_lutron_bridges(hass):
-        button_devices: dict = getattr(bridge, "button_devices", None) or {}
-        if not button_devices:
-            continue  # Caseta Pro bridge — has no button_devices; skip
-        candidates = [
-            bd for bd in button_devices.values()
-            if (serial and str(bd.get("serial", "")) == serial)
-            or (device_id and str(bd.get("device_id", "")) == device_id)
-        ]
-        if candidates:
-            matching = candidates
-            break
-
-    if not matching:
-        _LOGGER.debug(
-            "No button_devices matched serial=%s device_id=%s across any bridge "
-            "(expected for Caseta Pro); using keypad-type button count",
-            serial, device_id,
-        )
-        return {}
-
+    """Build a button layout dict from button_devices entries (RA3 / LEAP / RadioRA2)."""
     button_numbers: list[int] = sorted({
-        n for bd in matching
+        n for bd in candidates
         if (n := _resolve_btn_num(bd)) is not None
     })
     if not button_numbers:
@@ -275,16 +242,14 @@ def _detect_button_layout(
 
     raise_btn: int | None = None
     lower_btn: int | None = None
-    button_names: dict[str, str] = {}    # str(btn_num) → engraving label
-    leap_button_map: dict[str, int] = {} # str(leap_num) → configured button_number
+    button_names: dict[str, str] = {}
+    leap_button_map: dict[str, int] = {}
 
-    for bd in matching:
+    for bd in candidates:
         raw_name = bd.get("name", "")
         name_lc  = raw_name.lower()
-        bnum = _resolve_btn_num(bd)  # prefers button_number over leap_button_number
+        bnum = _resolve_btn_num(bd)
 
-        # Build leap→configured map so the controller can route events without
-        # needing to re-query the bridge at runtime.
         leap_raw = bd.get("leap_button_number")
         if bnum is not None and leap_raw is not None:
             try:
@@ -296,9 +261,6 @@ def _detect_button_layout(
 
         if bnum is None:
             continue
-        # Detect raise/lower: endswith patterns OR word-boundary "raise"/"lower"
-        # anywhere in the name (handles non-standard Lutron naming, international
-        # setups, and models where the word order differs).
         if (name_lc.endswith((" raise", "-raise", " up", "-up"))
                 or _RAISE_NAME_RE.search(raw_name)):
             raise_btn = bnum
@@ -312,9 +274,9 @@ def _detect_button_layout(
     configurable = [n for n in button_numbers if n not in (raise_btn, lower_btn)]
 
     _LOGGER.debug(
-        "Detected %d button(s) for serial %s: configurable=%s raise=%s lower=%s "
+        "button_devices layout: %d total, configurable=%s raise=%s lower=%s "
         "names=%s leap_map=%s",
-        len(button_numbers), serial, configurable, raise_btn, lower_btn,
+        len(button_numbers), configurable, raise_btn, lower_btn,
         button_names, leap_button_map,
     )
     return {
@@ -325,6 +287,176 @@ def _detect_button_layout(
         "button_names":         button_names,
         "leap_button_map":      leap_button_map,
     }
+
+
+def _build_layout_from_inline_buttons(
+    buttons_list: list[dict],
+    area_name: str,
+    device_name: str,
+    device_full_name: str = "",
+) -> dict:
+    """Build a layout dict from the inline 'buttons' list inside a device dict.
+
+    Caseta Pro (SmartBridge) exposes no button_devices attribute; instead each
+    device returned by get_devices() carries a 'buttons' list.  Events on
+    Caseta Pro use sequential button_number values that match the list, so no
+    LEAP remap is usually needed — but we capture it when present.
+    """
+    button_numbers: list[int] = []
+    raise_btn: int | None = None
+    lower_btn: int | None = None
+    button_names: dict[str, str] = {}
+    leap_button_map: dict[str, int] = {}
+
+    name_for_strip = device_name or device_full_name
+
+    for btn in buttons_list:
+        bnum_raw = btn.get("button_number")
+        if bnum_raw is None:
+            continue
+        try:
+            bnum = int(bnum_raw)
+        except (TypeError, ValueError):
+            continue
+
+        raw_name = btn.get("name", "")
+        name_lc  = raw_name.lower()
+
+        if (name_lc.endswith((" raise", "-raise", " up", "-up"))
+                or _RAISE_NAME_RE.search(raw_name)):
+            raise_btn = bnum
+        elif (name_lc.endswith((" lower", "-lower", " down", "-down"))
+                or _LOWER_NAME_RE.search(raw_name)):
+            lower_btn = bnum
+
+        button_numbers.append(bnum)
+
+        engraving = _strip_engraving(raw_name, area_name, name_for_strip)
+        if engraving:
+            button_names[str(bnum)] = engraving
+
+        # Some Caseta Pro devices also expose leap_button_number
+        leap_raw = btn.get("leap_button_number")
+        if leap_raw is not None:
+            try:
+                leap_int = int(leap_raw)
+                if leap_int != bnum:
+                    leap_button_map[str(leap_int)] = bnum
+            except (TypeError, ValueError):
+                pass
+
+    button_numbers = sorted(set(button_numbers))
+    configurable   = [n for n in button_numbers if n not in (raise_btn, lower_btn)]
+
+    _LOGGER.debug(
+        "inline-buttons layout: %d total, configurable=%s raise=%s lower=%s "
+        "names=%s leap_map=%s",
+        len(button_numbers), configurable, raise_btn, lower_btn,
+        button_names, leap_button_map,
+    )
+    return {
+        "button_numbers":       button_numbers,
+        "configurable_buttons": configurable,
+        "raise_button":         raise_btn,
+        "lower_button":         lower_btn,
+        "button_names":         button_names,
+        "leap_button_map":      leap_button_map,
+    }
+
+
+def _detect_button_layout(
+    hass: HomeAssistant,
+    serial: str,
+    keypad_type: str,
+    device_name: str = "",
+    area_name: str = "",
+    device_id: str = "",
+    device_data: dict | None = None,
+) -> dict:
+    """Detect the actual button layout for a keypad device.
+
+    Tries two strategies in order across every loaded lutron_caseta bridge:
+
+      Strategy 1 — bridge.button_devices (RA3 / LEAP / RadioRA2):
+        Contains both button_number and leap_button_number, which is essential
+        for LEAP event routing on those systems.
+
+      Strategy 2 — inline 'buttons' list in the device dict from get_devices()
+        (Caseta Pro / SmartBridge):
+        Caseta Pro exposes no button_devices attribute; the button list lives
+        inside the device returned by get_devices().  Pass device_data to avoid
+        an extra get_devices() call when the caller already has the dict.
+
+    Returns a layout dict on success, or {} to let the caller fall back to the
+    static family-based button count.
+    """
+    for bridge in _iter_lutron_bridges(hass):
+        # ── Strategy 1: button_devices (RA3 / LEAP) ──────────────────────────
+        button_devices: dict = getattr(bridge, "button_devices", None) or {}
+        if button_devices:
+            candidates = [
+                bd for bd in button_devices.values()
+                if (serial and str(bd.get("serial", "")) == serial)
+                or (device_id and str(bd.get("device_id", "")) == device_id)
+            ]
+            if candidates:
+                _LOGGER.debug(
+                    "Strategy 1 (button_devices): %d entries for serial=%s device_id=%s",
+                    len(candidates), serial, device_id,
+                )
+                return _build_layout_from_button_devices(candidates, area_name, device_name)
+
+        # ── Strategy 2: inline 'buttons' in device dict (Caseta Pro) ─────────
+        our_device: dict | None = device_data  # use pre-fetched dict when available
+        if our_device is None:
+            # Locate this device on the current bridge
+            try:
+                all_devs: dict = bridge.get_devices()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning("bridge.get_devices() failed during layout detection: %s", exc)
+                continue
+            for d in all_devs.values():
+                if (serial and str(d.get("serial", "")) == serial) \
+                        or (device_id and str(d.get("device_id", "")) == device_id):
+                    our_device = d
+                    break
+
+        if our_device is None:
+            continue  # Not on this bridge; try next
+
+        _LOGGER.debug(
+            "Device serial=%s on bridge %s — type=%r model=%r "
+            "inline_buttons=%d button_devices_total=%d",
+            serial, type(bridge).__name__,
+            our_device.get("type"), our_device.get("model"),
+            len(our_device.get("buttons", [])), len(button_devices),
+        )
+
+        inline: list[dict] = our_device.get("buttons", [])
+        if inline:
+            _LOGGER.debug(
+                "Strategy 2 (inline buttons): %d buttons for serial=%s",
+                len(inline), serial,
+            )
+            return _build_layout_from_inline_buttons(
+                inline, area_name, device_name, our_device.get("name", ""),
+            )
+
+        # Device found but no button data at all — log for diagnosis
+        _LOGGER.warning(
+            "Device serial=%s (type=%r model=%r) found on bridge but carries no button "
+            "data (button_devices_total=%d, inline_buttons=0). Full device info: %s",
+            serial, our_device.get("type"), our_device.get("model"),
+            len(button_devices), our_device,
+        )
+        return {}
+
+    _LOGGER.debug(
+        "Device serial=%s device_id=%s not found on any bridge; "
+        "falling back to keypad-type static layout.",
+        serial, device_id,
+    )
+    return {}
 
 
 # ── Config Flow ───────────────────────────────────────────────────────────────
@@ -390,6 +522,7 @@ class LutronKeypadsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     device_name=self._selected_device.get("name", ""),
                     area_name=self._selected_device.get("area_name", ""),
                     device_id=str(self._selected_device.get("device_id", "")),
+                    device_data=self._selected_device,
                 )
                 return await self.async_step_confirm()
 
