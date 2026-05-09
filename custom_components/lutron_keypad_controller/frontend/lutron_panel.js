@@ -179,6 +179,10 @@ const STYLES = `
     font-size: 10px; color: #81c784; background: rgba(76,175,80,0.2);
     border-radius: 3px; padding: 1px 5px; display: inline-block; width: fit-content;
   }
+  .sidebar-entry .entry-model {
+    font-size: 10px; color: #6a8f70; font-family: monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
   /* ── Main area ── */
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -285,7 +289,18 @@ const STYLES = `
   .keypad-type-pico .kp-btn { border-radius: 50%; aspect-ratio: 1; min-height: 32px; width: 32px; max-width: 100%; margin: 0 auto; }
   .keypad-type-pico .kp-col { align-items: center; }
   .keypad-type-tabletop .kp-btn { border-radius: 3px; min-height: 26px; font-size: 8px; }
-  .keypad-type-alisee .kp-btn { border-radius: 3px; aspect-ratio: 2/1; min-height: 28px; }
+  .keypad-type-alisee .kp-col { align-items: center; gap: 8px; }
+  .kp-btn-alisee-wrap {
+    display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer;
+  }
+  .kp-btn-alisee-wrap .kp-btn {
+    border-radius: 50%; aspect-ratio: 1; min-height: 32px; width: 32px;
+    max-width: 100%; margin: 0; padding: 0; font-size: 0;
+  }
+  .kp-btn-engraving {
+    font-size: 8px; color: #bdbdbd; text-align: center;
+    word-break: break-word; max-width: 44px; line-height: 1.2; pointer-events: none;
+  }
 
   /* ── Entity search ── */
   .tree-search-wrap { padding: 6px 10px 0; }
@@ -497,7 +512,63 @@ const STYLES = `
   .no-cap { color: var(--secondary-text-color, #aaa); font-size: 12px; }
   .cap-hint { font-size: 10px; color: var(--secondary-text-color, #aaa); font-style: italic; }
   .state-on { color: #4caf50; font-weight: 500; }
+
+  /* ── Tab bar (Press On / Off Level / Double Tap / Hold) ── */
+  .tab-bar {
+    display: flex; align-items: stretch; border-bottom: 2px solid var(--divider-color, #e0e0e0);
+    background: var(--card-background-color, #fff); flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer;
+    border: none; background: none; color: var(--secondary-text-color, #757575);
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+    transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+  }
+  .tab-btn:hover { color: #2e7d32; }
+  .tab-btn.active { color: #2e7d32; border-bottom-color: #4caf50; font-weight: 600; }
+  .tab-btn:disabled { opacity: 0.35; cursor: default; }
+
+  /* ── Off Level tab ── */
+  .off-level-section {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    background: var(--secondary-background-color, #f5f5f5);
+  }
+  .off-level-hint {
+    font-size: 12px; color: var(--secondary-text-color, #757575); margin-bottom: 12px;
+    padding: 8px 12px; background: rgba(76,175,80,0.06); border-radius: 4px;
+    border-left: 3px solid #a5d6a7;
+  }
+  .off-level-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .off-level-table th {
+    text-align: left; padding: 5px 10px;
+    background: var(--card-background-color, #fff);
+    border-bottom: 1px solid var(--divider-color, #e0e0e0);
+    font-weight: 600; color: var(--secondary-text-color, #757575);
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .off-level-table td { padding: 6px 10px; border-bottom: 1px solid var(--divider-color, #f0f0f0); vertical-align: middle; }
+
+  /* ── Sub-action config (double_tap / hold tabs) ── */
+  .sub-action-section {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sub-action-strip {
+    background: var(--card-background-color, #fff);
+    border-bottom: 1px solid var(--divider-color, #e0e0e0);
+    padding: 10px 16px; flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  }
+  .sub-action-hint {
+    font-size: 12px; color: var(--secondary-text-color, #9e9e9e); padding: 8px 0;
+  }
 `;
+
+// ── Tab definitions ───────────────────────────────────────────────
+const TABS = [
+  { id: "press_on",   label: "Press On" },
+  { id: "off_level",  label: "Off Level" },
+  { id: "double_tap", label: "Double Tap" },
+  { id: "hold",       label: "Hold" },
+];
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -616,11 +687,29 @@ function getButtonsFromEntry(entryData) {
 
 function defaultBtnCfg() {
   return {
-    label: "", action_type: "none", action_target: "",
-    led_entity: "", led_invert: false, led_mode: "room",
-    target_brightness: 0, target_color_temp: 0,
+    // Top-level (global) fields
+    label: "", led_entity: "", led_invert: false, led_mode: "room",
     scene_group: "", cycle_dim: false, enabled: true,
-    entity_settings: {},  // entityId → { brightness, color_temp, hs_color }
+    // Press On fields (at top level for backward compat with v1 backend)
+    action_type: "none", action_target: "", entity_settings: {},
+    target_brightness: 0, target_color_temp: 0,
+    // v2 sub-blocks
+    off_level:  { entity_settings: {} },
+    double_tap: { action_type: "none", action_target: "", entity_settings: {} },
+    hold:       { action_type: "none", action_target: "", entity_settings: {} },
+  };
+}
+
+function migrateToV2(saved) {
+  // Ensure v2 sub-block keys exist on a saved config (v1 has none of these)
+  const def = defaultBtnCfg();
+  return {
+    ...def,
+    ...saved,
+    off_level:  saved.off_level  || def.off_level,
+    double_tap: saved.double_tap ? { ...def.double_tap, ...saved.double_tap } : def.double_tap,
+    hold:       saved.hold       ? { ...def.hold,       ...saved.hold       } : def.hold,
+    entity_settings: saved.entity_settings || {},
   };
 }
 
@@ -641,6 +730,7 @@ class LutronKeypadsPanel extends HTMLElement {
     this._sidebarSearch = "";
     this._entitySearch = "";
     this._selectedDiscoveryDevice = null;
+    this._activeTabs = {};  // entryId → btnNum → tab id ("press_on"|"off_level"|"double_tap"|"hold")
     this._initialized = false;
     this._shadow = this.attachShadow({ mode: "open" });
 
@@ -800,10 +890,14 @@ class LutronKeypadsPanel extends HTMLElement {
       for (const entry of entries) {
         const active = entry.entry_id === this._selectedEntryId ? "active" : "";
         const ktype = (entry.data?.keypad_type || "generic").replace(/_/g, " ");
+        const model = entry.data?.model_number || "";
         html += `
           <div class="sidebar-entry ${active}" data-entry="${entry.entry_id}">
             <span class="entry-name">${entry.title}</span>
-            <span class="entry-type">${ktype}</span>
+            <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+              <span class="entry-type">${ktype}</span>
+              ${model ? `<span class="entry-model">${this._esc(model)}</span>` : ""}
+            </div>
           </div>`;
       }
     }
@@ -842,16 +936,26 @@ class LutronKeypadsPanel extends HTMLElement {
     const names = entry.data?.button_names || {};
     for (const btn of all) {
       const saved = savedButtons[String(btn.number)] || {};
+      const migrated = migrateToV2(saved);
       pending[btn.number] = {
-        ...defaultBtnCfg(),
-        ...saved,
-        entity_settings: saved.entity_settings || {},
-        label: saved.label || names[String(btn.number)] || "",
+        ...migrated,
+        label: migrated.label || names[String(btn.number)] || "",
       };
       if (btn.is_raise) { pending[btn.number].action_type = "raise";  pending[btn.number].label = pending[btn.number].label || "Raise"; }
       if (btn.is_lower) { pending[btn.number].action_type = "lower";  pending[btn.number].label = pending[btn.number].label || "Lower"; }
     }
     this._pendingConfig[entryId] = pending;
+  }
+
+  _getActiveTab() {
+    const tabs = this._activeTabs[this._selectedEntryId];
+    return (tabs && tabs[this._selectedButton]) || "press_on";
+  }
+
+  _setActiveTab(tab) {
+    if (!this._activeTabs[this._selectedEntryId])
+      this._activeTabs[this._selectedEntryId] = {};
+    this._activeTabs[this._selectedEntryId][this._selectedButton] = tab;
   }
 
   // ── Main area ──────────────────────────────────────────────────
@@ -878,6 +982,8 @@ class LutronKeypadsPanel extends HTMLElement {
     const pending = this._pendingConfig[this._selectedEntryId] || {};
     const btnCfg = pending[this._selectedButton] || defaultBtnCfg();
 
+    const activeTab = this._getActiveTab();
+
     main.innerHTML = `
       <div class="breadcrumb">
         ${entry.data?.area_name ? `<span>${entry.data.area_name}</span> ›` : ""}
@@ -889,11 +995,12 @@ class LutronKeypadsPanel extends HTMLElement {
         <div class="col-right" id="col-right">
           ${this._renderConfigStrip(entry, btnCfg, isRL)}
           ${this._renderExtraConfig(btnCfg, isRL)}
-          ${this._renderTreeSection(entry, btnCfg, isRL)}
+          ${this._renderTabBar(btnCfg, isRL, activeTab)}
+          ${this._renderTabContent(entry, btnCfg, isRL, activeTab)}
         </div>
       </div>
       <div class="resize-handle-h" id="summary-resizer"></div>
-      ${this._renderSummarySection(entry, btnCfg, isRL)}
+      ${this._renderSummarySection(entry, btnCfg, isRL, activeTab)}
     `;
 
     this._attachMainListeners(entry, buttons, btnCfg);
@@ -931,6 +1038,12 @@ class LutronKeypadsPanel extends HTMLElement {
       const label = cfg.label || names[String(b.number)] || `Btn ${b.number}`;
       const sel  = b.number === this._selectedButton ? "selected" : "";
       const conf = cfg.action_type && cfg.action_type !== "none" ? "configured" : "";
+      if (ktype === "alisee") {
+        return `<div class="kp-btn-alisee-wrap" data-kp-btn="${b.number}">
+          <div class="kp-btn ${sel} ${conf}" style="position:relative"></div>
+          <span class="kp-btn-engraving">${this._esc(label)}</span>
+        </div>`;
+      }
       return `<div class="kp-btn ${sel} ${conf}" data-kp-btn="${b.number}" style="position:relative">${this._esc(label)}</div>`;
     };
 
@@ -994,8 +1107,6 @@ class LutronKeypadsPanel extends HTMLElement {
     // Cycle Dim checkbox only applies to actions that have assigned light entities
     const CYCLE_DIM_ACTIONS = new Set(["entity_toggle", "light_cycle_dim", "stateful_scene"]);
     const showCycleDim = !isRL && CYCLE_DIM_ACTIONS.has(at);
-    // For light_cycle_dim the behaviour is always tap-to-step / hold-to-ramp,
-    // so the checkbox is forced on and the label clarifies.
     const cycleDimForced = at === "light_cycle_dim";
     const cycleDimChecked = cycleDimForced ? "checked" : cycleDim;
     const cycleDimDisabled = cycleDimForced ? "disabled" : (isRL ? "disabled" : "");
@@ -1003,19 +1114,12 @@ class LutronKeypadsPanel extends HTMLElement {
       ? 'title="Dim Cycle always uses tap-to-step / hold-to-ramp"'
       : 'title="Hold to dim continuously; tap for normal action"';
 
-    const atOptions = Object.entries(ACTION_TYPES).map(([val, info]) =>
-      `<option value="${val}" ${val === at ? "selected" : ""}>${info.label}</option>`
-    ).join("");
     const ledOptions = Object.entries(LED_LOGIC).map(([val, label]) =>
       `<option value="${val}" ${val === ledMode ? "selected" : ""}>${label}</option>`
     ).join("");
 
     return `
       <div class="btn-config-strip">
-        <div class="config-field">
-          <label>Action Type</label>
-          <select id="sel-action-type" ${isRL ? "disabled" : ""}>${atOptions}</select>
-        </div>
         <div class="config-field">
           <label>LED Logic</label>
           <select id="sel-led-logic" ${isRL ? "disabled" : ""}>${ledOptions}</select>
@@ -1029,6 +1133,178 @@ class LutronKeypadsPanel extends HTMLElement {
           <input id="chk-led-invert" type="checkbox" ${btnCfg.led_invert ? "checked" : ""} ${isRL ? "disabled" : ""}>
           Invert LED
         </label>
+      </div>`;
+  }
+
+  // ── Tab bar ────────────────────────────────────────────────────
+
+  _renderTabBar(btnCfg, isRL, activeTab) {
+    if (isRL) return "";
+    const cycleDim = btnCfg.cycle_dim || false;
+    const at = btnCfg.action_type || "none";
+    const hasEntities = (ACTION_TYPES[at]?.domains || []).length > 0;
+    const showOffLevel = at === "entity_toggle";
+
+    return `<div class="tab-bar">
+      ${TABS.map(t => {
+        let disabled = "";
+        if (t.id === "off_level"  && !showOffLevel)     disabled = "disabled";
+        if (t.id === "hold"       && cycleDim)           disabled = "disabled title='Disabled when Hold to Dim is active'";
+        const active = t.id === activeTab ? "active" : "";
+        return `<button class="tab-btn ${active}" data-tab="${t.id}" ${disabled}>${t.label}</button>`;
+      }).join("")}
+    </div>`;
+  }
+
+  // ── Tab content routing ────────────────────────────────────────
+
+  _renderTabContent(entry, btnCfg, isRL, activeTab) {
+    if (isRL) {
+      return `<div class="tree-section"><div class="tree-empty">Raise/Lower buttons use the last active button's context — no direct assignment needed.</div></div>`;
+    }
+    if (activeTab === "off_level") return this._renderOffLevelTab(entry, btnCfg);
+    if (activeTab === "double_tap") return this._renderSubActionTab(entry, btnCfg, "double_tap");
+    if (activeTab === "hold")       return this._renderSubActionTab(entry, btnCfg, "hold");
+    // Default: press_on
+    return this._renderPressOnTab(entry, btnCfg);
+  }
+
+  _renderPressOnTab(entry, btnCfg) {
+    const at = btnCfg.action_type || "none";
+    const atOptions = Object.entries(ACTION_TYPES).map(([val, info]) =>
+      `<option value="${val}" ${val === at ? "selected" : ""}>${info.label}</option>`
+    ).join("");
+    const actionStrip = `
+      <div class="btn-config-strip" style="border-bottom:none;padding-bottom:6px">
+        <div class="config-field">
+          <label>Action Type</label>
+          <select id="sel-action-type">${atOptions}</select>
+        </div>
+      </div>`;
+    return actionStrip + this._renderTreeSection(entry, btnCfg, false);
+  }
+
+  _renderOffLevelTab(entry, btnCfg) {
+    const targets = this._getSelectedTargets(btnCfg).filter(eid => eid.startsWith("light."));
+    if (targets.length === 0) {
+      return `<div class="off-level-section"><div class="off-level-hint">Add lights to Press On first. Off Level sets a non-zero dim level used when turning lights off — useful for "dim to 10%" instead of fully off.</div></div>`;
+    }
+    const offLevelSettings = btnCfg.off_level?.entity_settings || {};
+    const rows = targets.map(eid => {
+      const entEntry = this._hass.entities?.[eid];
+      const name = friendlyName(this._hass, eid, entEntry);
+      const val = offLevelSettings[eid]?.brightness > 0 ? offLevelSettings[eid].brightness : "";
+      return `<tr>
+        <td style="font-size:12px">${this._esc(name)}<div style="font-size:10px;color:var(--secondary-text-color,#9e9e9e)">${this._esc(eid)}</div></td>
+        <td><input class="ent-setting ol-setting" type="number" min="1" max="100"
+             data-entity="${eid}" data-key="brightness"
+             value="${val}" placeholder="off" title="Dim to this % when turning off (blank = full off)"></td>
+      </tr>`;
+    }).join("");
+    return `
+      <div class="off-level-section">
+        <div class="off-level-hint">
+          Set a dim level (1–100%) to use when turning off each light. Leave blank to turn fully off.
+        </div>
+        <table class="off-level-table">
+          <thead><tr><th>Light</th><th>Off Level&nbsp;%</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  _renderSubActionTab(entry, btnCfg, tabName) {
+    const tabCfg  = btnCfg[tabName] || {};
+    const at = tabCfg.action_type || "none";
+    const cycleDim = btnCfg.cycle_dim || false;
+    const isHold = tabName === "hold";
+    const disabled = isHold && cycleDim ? "disabled" : "";
+
+    const atOptions = Object.entries(ACTION_TYPES).map(([val, info]) =>
+      `<option value="${val}" ${val === at ? "selected" : ""}>${info.label}</option>`
+    ).join("");
+
+    const info = ACTION_TYPES[at];
+    const domains = info?.domains || [];
+    const esq = (this._entitySearch || "").toLowerCase().trim();
+    const allEntities = this._getEntitiesForAction(at);
+    const entities = esq
+      ? allEntities.filter(e => e.name.toLowerCase().includes(esq) || e.entity_id.toLowerCase().includes(esq))
+      : allEntities;
+    const byArea = this._groupByArea(entities);
+    const areaKeys = Object.keys(byArea).sort((a, b) => {
+      if (a === "_none") return 1; if (b === "_none") return -1;
+      return areaName(this._hass, a).localeCompare(areaName(this._hass, b));
+    });
+
+    const isMulti = info?.multi || false;
+    const selectedTargets = this._getSelectedTargets(tabCfg);
+
+    let treeHtml = "";
+    if (domains.length > 0) {
+      for (const areaId of areaKeys) {
+        if (this._filterArea && areaId !== this._filterArea && areaId !== "_none") continue;
+        const areaEntities = byArea[areaId];
+        const expanded = this._expandedAreas.has(areaId);
+        const selCount = areaEntities.filter(e => selectedTargets.includes(e.entity_id)).length;
+        const allSel = selCount === areaEntities.length && areaEntities.length > 0;
+        const someSel = selCount > 0 && !allSel;
+        const label = areaId === "_none" ? "No Area" : areaName(this._hass, areaId);
+        treeHtml += `
+          <div class="area-node">
+            <div class="area-header" data-area-toggle="${areaId}">
+              <span class="area-expand">${expanded ? "▼" : "▶"}</span>
+              <input type="checkbox" class="area-check sub-area-check" data-area-check="${areaId}" data-tab="${tabName}"
+                     ${allSel ? "checked" : ""} ${someSel ? "data-indeterminate" : ""}>
+              <span class="area-name">${this._esc(label)}</span>
+              <span class="area-count">${selCount > 0 ? selCount + " of " : ""}${areaEntities.length} ${selCount > 0 ? "selected" : "available"}</span>
+            </div>
+            <div class="area-entities ${expanded ? "open" : ""}" id="area-ents-${areaId}">
+              ${areaEntities.map(ent => this._renderSubEntityRow(ent, selectedTargets, isMulti, tabName)).join("")}
+            </div>
+          </div>`;
+      }
+      if (!treeHtml) treeHtml = `<div class="tree-empty">No entities found.</div>`;
+    } else {
+      treeHtml = `<div class="tree-empty">${
+        at === "none" ? "Select an action type above." : "This action type needs no entity."
+      }</div>`;
+    }
+
+    const hintText = isHold && cycleDim
+      ? `<div class="sub-action-hint">Hold to Dim is active — Hold action is disabled. Uncheck "Hold to Dim" to configure a custom hold action.</div>`
+      : "";
+
+    return `
+      <div class="sub-action-section">
+        <div class="sub-action-strip">
+          <div class="config-field">
+            <label>Action Type</label>
+            <select id="sel-sub-action-${tabName}" data-tab="${tabName}" ${disabled}>${atOptions}</select>
+          </div>
+          ${hintText}
+        </div>
+        <div class="tree-section" style="flex:1">
+          <div class="tree-container">${treeHtml}</div>
+        </div>
+      </div>`;
+  }
+
+  _renderSubEntityRow(ent, selectedTargets, isMulti, tabName) {
+    const sel = selectedTargets.includes(ent.entity_id);
+    const stateVal = this._hass.states?.[ent.entity_id]?.state;
+    const attrs = this._hass.states?.[ent.entity_id]?.attributes || {};
+    const stateLabel = entityStateLabel(ent.entity_id, stateVal, attrs);
+    const icon = entityIcon(ent.entity_id, stateVal);
+    const isOn = stateVal && !["off","closed","unavailable","unknown"].includes(stateVal);
+    const inputType = isMulti ? "checkbox" : "radio";
+    return `
+      <div class="entity-row ${sel ? "selected" : ""}" data-entity="${ent.entity_id}">
+        <input type="${inputType}" class="entity-check sub-entity-check" ${sel ? "checked" : ""}
+               data-entity-check="${ent.entity_id}" data-tab="${tabName}">
+        <span class="entity-icon">${icon}</span>
+        <span class="entity-name">${this._esc(ent.name)}</span>
+        <span class="entity-state ${isOn ? "on" : ""}">${stateLabel}</span>
       </div>`;
   }
 
@@ -1160,7 +1436,7 @@ class LutronKeypadsPanel extends HTMLElement {
 
   // ── Summary / Programming table (bottom) ──────────────────────
 
-  _renderSummarySection(entry, btnCfg, isRL) {
+  _renderSummarySection(entry, btnCfg, isRL, activeTab = "press_on") {
     const at = btnCfg.action_type || "none";
     const info = ACTION_TYPES[at];
     const targets = this._getSelectedTargets(btnCfg);
@@ -1191,6 +1467,7 @@ class LutronKeypadsPanel extends HTMLElement {
 
     // Determine which capability columns to show
     const isEntityToggle = at === "entity_toggle";
+    const isPressOnTab = activeTab === "press_on" || activeTab === undefined;
     let hasAnyBri = false, hasAnyCT = false, hasAnyColor = false;
     if (isEntityToggle) {
       for (const eid of targets) {
@@ -1207,6 +1484,7 @@ class LutronKeypadsPanel extends HTMLElement {
       ${hasAnyBri   ? "<th>Brightness&nbsp;%</th>" : ""}
       ${hasAnyCT    ? "<th>Color&nbsp;Temp&nbsp;K</th>" : ""}
       ${hasAnyColor ? "<th>Color</th>" : ""}
+      ${(isEntityToggle && isPressOnTab) ? "<th>Fade&nbsp;s</th><th>Delay&nbsp;s</th>" : ""}
       <th></th>`;
 
     const rows = targets.map(entityId => {
@@ -1225,7 +1503,7 @@ class LutronKeypadsPanel extends HTMLElement {
       const caps = getLightCaps(this._hass, entityId);
       const ent_s = entSettings[entityId] || {};
 
-      let briCell = "", ctCell = "", colorCell = "";
+      let briCell = "", ctCell = "", colorCell = "", fadeCell = "", delayCell = "";
       if (isEntityToggle) {
         if (hasAnyBri) {
           if (caps?.brightness) {
@@ -1262,6 +1540,16 @@ class LutronKeypadsPanel extends HTMLElement {
             colorCell = `<td><span class="no-cap">—</span></td>`;
           }
         }
+        if (isPressOnTab) {
+          const fadeVal  = ent_s.fade  > 0 ? ent_s.fade  : "";
+          const delayVal = ent_s.delay > 0 ? ent_s.delay : "";
+          fadeCell  = `<td><input class="ent-setting" type="number" min="0" max="60" step="0.5"
+                          data-entity="${entityId}" data-key="fade"
+                          value="${fadeVal}" placeholder="0" title="Transition time in seconds"></td>`;
+          delayCell = `<td><input class="ent-setting" type="number" min="0" max="30" step="0.5"
+                          data-entity="${entityId}" data-key="delay"
+                          value="${delayVal}" placeholder="0" title="Delay before sending command (seconds)"></td>`;
+        }
       }
 
       return `
@@ -1271,7 +1559,7 @@ class LutronKeypadsPanel extends HTMLElement {
             <span style="margin-left:6px;font-size:12px">${this._esc(desc)}</span>
           </td>
           <td class="${isOn ? "state-on" : ""}" style="white-space:nowrap">${stateLabel || "—"}</td>
-          ${briCell}${ctCell}${colorCell}
+          ${briCell}${ctCell}${colorCell}${fadeCell}${delayCell}
           <td><button class="remove-entity" data-remove="${entityId}" title="Remove">✕</button></td>
         </tr>`;
     }).join("");
@@ -1323,13 +1611,25 @@ class LutronKeypadsPanel extends HTMLElement {
     if (inpLabel) {
       inpLabel.addEventListener("change", () => {
         this._setBtnProp("label", inpLabel.value);
+        const newLabel = inpLabel.value || `Btn ${this._selectedButton}`;
         shadow.querySelectorAll(`[data-kp-btn="${this._selectedButton}"]`).forEach(el => {
-          if (!el.classList.contains("raise-lower")) el.textContent = inpLabel.value || `Btn ${this._selectedButton}`;
+          if (el.classList.contains("raise-lower")) return;
+          const engravingSpan = el.querySelector(".kp-btn-engraving");
+          if (engravingSpan) engravingSpan.textContent = newLabel;
+          else el.textContent = newLabel;
         });
       });
     }
 
-    // Action type
+    // Tab bar
+    shadow.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        this._setActiveTab(btn.dataset.tab);
+        this._renderMain();
+      });
+    });
+
+    // Press On action type (in press_on tab)
     const selAction = shadow.getElementById("sel-action-type");
     if (selAction) {
       selAction.addEventListener("change", () => {
@@ -1338,6 +1638,16 @@ class LutronKeypadsPanel extends HTMLElement {
         this._renderMain();
       });
     }
+
+    // Sub-tab action type selectors (double_tap / hold)
+    shadow.querySelectorAll("[id^='sel-sub-action-']").forEach(sel => {
+      sel.addEventListener("change", () => {
+        const tabName = sel.dataset.tab;
+        this._setTabProp(tabName, "action_type", sel.value);
+        this._setTabProp(tabName, "action_target", "");
+        this._renderMain();
+      });
+    });
 
     // LED logic
     const selLed = shadow.getElementById("sel-led-logic");
@@ -1400,8 +1710,8 @@ class LutronKeypadsPanel extends HTMLElement {
       });
     });
 
-    // Area checkboxes
-    shadow.querySelectorAll("[data-area-check]").forEach(el => {
+    // Area checkboxes (press_on tree)
+    shadow.querySelectorAll("[data-area-check]:not(.sub-area-check)").forEach(el => {
       el.addEventListener("change", (e) => {
         e.stopPropagation();
         const areaId = el.dataset.areaCheck;
@@ -1413,8 +1723,23 @@ class LutronKeypadsPanel extends HTMLElement {
       });
     });
 
-    // Entity checkboxes/radios
-    shadow.querySelectorAll("[data-entity-check]").forEach(el => {
+    // Sub-tab area checkboxes (double_tap / hold)
+    shadow.querySelectorAll(".sub-area-check").forEach(el => {
+      el.addEventListener("change", (e) => {
+        e.stopPropagation();
+        const areaId = el.dataset.areaCheck;
+        const tabName = el.dataset.tab;
+        const tabCfg = (this._pendingConfig[this._selectedEntryId] || {})[this._selectedButton]?.[tabName] || {};
+        const at = tabCfg.action_type || "none";
+        const entities = this._getEntitiesForAction(at);
+        const areaEnts = entities.filter(ent => (resolveAreaId(ent.entity_id, this._hass) || "_none") === areaId);
+        areaEnts.forEach(ent => this._selectTabEntity(tabName, ent.entity_id, el.checked));
+        this._renderMain();
+      });
+    });
+
+    // Entity checkboxes/radios (press_on tree)
+    shadow.querySelectorAll("[data-entity-check]:not(.sub-entity-check)").forEach(el => {
       el.addEventListener("change", () => {
         const entityId = el.dataset.entityCheck;
         const at = (this._pendingConfig[this._selectedEntryId] || {})[this._selectedButton]?.action_type || "none";
@@ -1425,7 +1750,21 @@ class LutronKeypadsPanel extends HTMLElement {
       });
     });
 
-    // Entity row click
+    // Sub-tab entity checkboxes (double_tap / hold)
+    shadow.querySelectorAll(".sub-entity-check").forEach(el => {
+      el.addEventListener("change", () => {
+        const entityId = el.dataset.entityCheck;
+        const tabName  = el.dataset.tab;
+        const tabCfg = (this._pendingConfig[this._selectedEntryId] || {})[this._selectedButton]?.[tabName] || {};
+        const at = tabCfg.action_type || "none";
+        const isMulti = ACTION_TYPES[at]?.multi || false;
+        if (!isMulti) this._setTabProp(tabName, "action_target", entityId);
+        else this._selectTabEntity(tabName, entityId, el.checked);
+        this._renderMain();
+      });
+    });
+
+    // Entity row click (works for both main tree and sub-tabs)
     shadow.querySelectorAll(".entity-row").forEach(el => {
       el.addEventListener("click", (e) => {
         if (e.target.type === "checkbox" || e.target.type === "radio") return;
@@ -1443,12 +1782,21 @@ class LutronKeypadsPanel extends HTMLElement {
     });
 
     // Per-entity setting inputs in summary (no re-render on change)
-    shadow.querySelectorAll(".ent-setting").forEach(el => {
+    shadow.querySelectorAll(".ent-setting:not(.ol-setting)").forEach(el => {
       el.addEventListener("change", () => {
         const entityId = el.dataset.entity;
         const key = el.dataset.key;
-        const val = parseInt(el.value) || 0;
+        const val = parseFloat(el.value) || 0;
         this._setEntitySetting(entityId, key, val > 0 ? val : null);
+      });
+    });
+
+    // Off Level inputs
+    shadow.querySelectorAll(".ol-setting").forEach(el => {
+      el.addEventListener("change", () => {
+        const entityId = el.dataset.entity;
+        const val = parseInt(el.value) || 0;
+        this._setOffLevelSetting(entityId, "brightness", val > 0 ? val : null);
       });
     });
 
@@ -1561,6 +1909,57 @@ class LutronKeypadsPanel extends HTMLElement {
       delete btnCfg.entity_settings[entityId][key];
     } else {
       btnCfg.entity_settings[entityId][key] = value;
+    }
+    this._dirty[entryId] = true;
+    this._updateSaveButton();
+  }
+
+  _setTabProp(tabName, key, value) {
+    const entryId = this._selectedEntryId;
+    if (!entryId || !this._pendingConfig[entryId]) return;
+    const btnCfg = this._pendingConfig[entryId][this._selectedButton];
+    if (!btnCfg) return;
+    if (!btnCfg[tabName]) btnCfg[tabName] = { action_type: "none", action_target: "", entity_settings: {} };
+    btnCfg[tabName][key] = value;
+    this._dirty[entryId] = true;
+    this._updateSaveButton();
+  }
+
+  _selectTabEntity(tabName, entityId, selected) {
+    const entryId = this._selectedEntryId;
+    if (!entryId || !this._pendingConfig[entryId]) return;
+    const btnCfg = this._pendingConfig[entryId][this._selectedButton];
+    if (!btnCfg) return;
+    if (!btnCfg[tabName]) btnCfg[tabName] = { action_type: "none", action_target: "", entity_settings: {} };
+    const tabCfg = btnCfg[tabName];
+    const at = tabCfg.action_type || "none";
+    const isMulti = ACTION_TYPES[at]?.multi || false;
+    if (!isMulti) {
+      tabCfg.action_target = selected ? entityId : "";
+    } else {
+      let targets = Array.isArray(tabCfg.action_target)
+        ? [...tabCfg.action_target]
+        : (tabCfg.action_target ? [tabCfg.action_target] : []);
+      if (selected) { if (!targets.includes(entityId)) targets.push(entityId); }
+      else targets = targets.filter(t => t !== entityId);
+      tabCfg.action_target = targets;
+    }
+    this._dirty[entryId] = true;
+    this._updateSaveButton();
+  }
+
+  _setOffLevelSetting(entityId, key, value) {
+    const entryId = this._selectedEntryId;
+    if (!entryId || !this._pendingConfig[entryId]) return;
+    const btnCfg = this._pendingConfig[entryId][this._selectedButton];
+    if (!btnCfg) return;
+    if (!btnCfg.off_level) btnCfg.off_level = { entity_settings: {} };
+    if (!btnCfg.off_level.entity_settings) btnCfg.off_level.entity_settings = {};
+    if (!btnCfg.off_level.entity_settings[entityId]) btnCfg.off_level.entity_settings[entityId] = {};
+    if (value === null || value === undefined || value === 0) {
+      delete btnCfg.off_level.entity_settings[entityId][key];
+    } else {
+      btnCfg.off_level.entity_settings[entityId][key] = value;
     }
     this._dirty[entryId] = true;
     this._updateSaveButton();

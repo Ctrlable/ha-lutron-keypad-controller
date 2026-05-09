@@ -210,8 +210,29 @@ CONFIG_SCHEMA = vol.Schema(
 PLATFORMS: list[str] = ["sensor", "switch", "select", "text"]
 
 
+def _normalize_action_target(target_raw: Any, action_type: str) -> Any:
+    """Normalize a raw action target to the canonical form for the given action type."""
+    if not target_raw:
+        return target_raw
+    if isinstance(target_raw, list):
+        flat = [t.strip() for t in target_raw if str(t).strip()]
+    elif isinstance(target_raw, str) and "," in target_raw:
+        flat = [t.strip() for t in target_raw.split(",") if t.strip()]
+    else:
+        flat = [target_raw] if target_raw else []
+    if not flat:
+        return target_raw
+    if action_type in (ACTION_STATEFUL_SCENE, ACTION_HA_SCENE,
+                       ACTION_AUTOMATION, ACTION_SCRIPT):
+        return flat[0]
+    return flat
+
+
 def _build_buttons_from_options(buttons_options: dict) -> list[dict]:
-    """Convert options {"1": {…}, "2": {…}} to a list suitable for LutronKeypadsController."""
+    """Convert options {"1": {…}, "2": {…}} to a list suitable for LutronKeypadsController.
+
+    Supports both v1 (flat) and v2 (nested press_on/off_level/double_tap/hold) formats.
+    """
     result = []
     for btn_num_str, btn_data in buttons_options.items():
         try:
@@ -220,45 +241,56 @@ def _build_buttons_from_options(buttons_options: dict) -> list[dict]:
             continue
         if not btn_data.get("enabled", True):
             continue
-        action_type = btn_data.get(CONF_ACTION_TYPE, ACTION_NONE)
+
+        # v2 detection: press_on sub-block present → merge it for field extraction
+        press_on_block = btn_data.get("press_on")
+        effective_data = {**btn_data, **press_on_block} if press_on_block is not None else btn_data
+
+        action_type = effective_data.get(CONF_ACTION_TYPE, ACTION_NONE)
         if not action_type or action_type == ACTION_NONE:
             continue
+
         btn_cfg: dict = {
             CONF_BUTTON_NUMBER: btn_num,
             CONF_BUTTON_LABEL:  btn_data.get(CONF_BUTTON_LABEL, ""),
             CONF_ACTION_TYPE:   action_type,
         }
-        target = btn_data.get(CONF_ACTION_TARGET, "")
-        if target:
-            # Normalize: options flow stores lists; multi-entity actions keep
-            # the list, single-entity actions get unwrapped to a plain string.
-            if isinstance(target, list):
-                flat = [t.strip() for t in target if str(t).strip()]
-            elif isinstance(target, str) and "," in target:
-                flat = [t.strip() for t in target.split(",") if t.strip()]
-            else:
-                flat = [target] if target else []
 
-            if flat:
-                if action_type in (ACTION_STATEFUL_SCENE, ACTION_HA_SCENE,
-                                   ACTION_AUTOMATION, ACTION_SCRIPT):
-                    btn_cfg[CONF_ACTION_TARGET] = flat[0]
-                else:
-                    btn_cfg[CONF_ACTION_TARGET] = flat
+        target = _normalize_action_target(effective_data.get(CONF_ACTION_TARGET, ""), action_type)
+        if target:
+            btn_cfg[CONF_ACTION_TARGET] = target
         if btn_data.get(CONF_LED_ENTITY):
             btn_cfg[CONF_LED_ENTITY] = btn_data[CONF_LED_ENTITY]
         if btn_data.get(CONF_LED_INVERT):
             btn_cfg[CONF_LED_INVERT] = True
-        if btn_data.get("scene_group"):
-            btn_cfg["scene_group"] = btn_data["scene_group"]
+        if effective_data.get("scene_group"):
+            btn_cfg["scene_group"] = effective_data["scene_group"]
         if btn_data.get(CONF_LED_MODE):
             btn_cfg[CONF_LED_MODE] = btn_data[CONF_LED_MODE]
-        if btn_data.get(CONF_TARGET_BRIGHTNESS):
-            btn_cfg[CONF_TARGET_BRIGHTNESS] = int(btn_data[CONF_TARGET_BRIGHTNESS])
-        if btn_data.get(CONF_TARGET_COLOR_TEMP):
-            btn_cfg[CONF_TARGET_COLOR_TEMP] = int(btn_data[CONF_TARGET_COLOR_TEMP])
-        if btn_data.get(CONF_ENTITY_SETTINGS):
-            btn_cfg[CONF_ENTITY_SETTINGS] = btn_data[CONF_ENTITY_SETTINGS]
+        if effective_data.get(CONF_TARGET_BRIGHTNESS):
+            btn_cfg[CONF_TARGET_BRIGHTNESS] = int(effective_data[CONF_TARGET_BRIGHTNESS])
+        if effective_data.get(CONF_TARGET_COLOR_TEMP):
+            btn_cfg[CONF_TARGET_COLOR_TEMP] = int(effective_data[CONF_TARGET_COLOR_TEMP])
+        if effective_data.get(CONF_ENTITY_SETTINGS):
+            btn_cfg[CONF_ENTITY_SETTINGS] = effective_data[CONF_ENTITY_SETTINGS]
+        if btn_data.get("cycle_dim"):
+            btn_cfg["cycle_dim"] = True
+
+        # Build v2 sub-blocks for double_tap / hold / off_level dispatch.
+        # Supports two formats:
+        #   Fully nested (v2):   press_on key present → sub-blocks also nested.
+        #   Hybrid (frontend v2): press_on fields at top level + sibling off_level/double_tap/hold keys.
+        off_level  = btn_data.get("off_level",  {})
+        double_tap = btn_data.get("double_tap", {})
+        hold       = btn_data.get("hold",       {})
+        if press_on_block is not None or off_level or double_tap or hold:
+            btn_cfg["_v2_blocks"] = {
+                "press_on":   press_on_block or {},
+                "off_level":  off_level,
+                "double_tap": double_tap,
+                "hold":       hold,
+            }
+
         result.append(btn_cfg)
     return result
 
@@ -1279,13 +1311,14 @@ class LutronKeypadsController:
             self._leap_btn_map = {int(k): v for k, v in stored.items()}
 
         # Press-and-hold tracking (synchronous call_later state machine)
-        self._press_times:     dict[int, float] = {}  # monotonic time of last press
-        self._release_counts:  dict[int, int]   = {}  # releases seen since last press
-        self._held:            dict[int, bool]  = {}  # True while hold-event ramp is active
-        self._confirm_handles: dict             = {}  # call_later handle: hold-confirm window
-        self._ramp_tasks:  dict[int, asyncio.Task] = {}  # active ramp coroutine per button
-        self._ramp_dirs:       dict[int, str]   = {}  # last ramp direction per button
-        self._ramp_end_times:  dict[int, float] = {}  # time last ramp ended per button
+        self._press_times:      dict[int, float] = {}  # monotonic time of last press
+        self._last_press_times: dict[int, float] = {}  # time of previous press (double-tap)
+        self._release_counts:   dict[int, int]   = {}  # releases seen since last press
+        self._held:             dict[int, bool]  = {}  # True while hold-event ramp is active
+        self._confirm_handles:  dict             = {}  # call_later handle: hold-confirm window
+        self._ramp_tasks:   dict[int, asyncio.Task] = {}  # active ramp coroutine per button
+        self._ramp_dirs:        dict[int, str]   = {}  # last ramp direction per button
+        self._ramp_end_times:   dict[int, float] = {}  # time last ramp ended per button
 
         # Sensors to notify when _last_action changes
         self._state_sensors: list = []
@@ -1761,10 +1794,11 @@ class LutronKeypadsController:
     # _HOLD_CONFIRM must exceed the user's natural quick-tap duration.
     # Observed tap release times on this hardware: ~440 ms → 600 ms gives margin.
 
-    _FAKE_WINDOW   = 0.025  # seconds — releases within this window are Lutron fakes
-    _HOLD_CONFIRM  = 0.60   # seconds after PRESS before hold event fires
-    _RAMP_STEP_PCT = 10     # brightness % per ramp tick
-    _RAMP_INTERVAL = 0.40   # seconds between ticks (also used as transition time)
+    _FAKE_WINDOW        = 0.025  # seconds — releases within this window are Lutron fakes
+    _HOLD_CONFIRM       = 0.60   # seconds after PRESS before hold event fires
+    _DOUBLE_TAP_WINDOW  = 0.40   # seconds — second press within this window triggers double_tap
+    _RAMP_STEP_PCT      = 10     # brightness % per ramp tick
+    _RAMP_INTERVAL      = 0.40   # seconds between ticks (also used as transition time)
 
     _HOLD_ACTIONS = frozenset({
         ACTION_ENTITY_TOGGLE, ACTION_STATEFUL_SCENE, ACTION_RAISE, ACTION_LOWER,
@@ -1781,13 +1815,37 @@ class LutronKeypadsController:
         if old_ramp is not None and not old_ramp.done():
             old_ramp.cancel()
 
-        self._press_times[btn_num]    = asyncio.get_event_loop().time()
+        now = asyncio.get_event_loop().time()
+        last_press = self._last_press_times.get(btn_num, 0)
+        self._last_press_times[btn_num] = now
+
+        self._press_times[btn_num]    = now
         self._release_counts[btn_num] = 0
         self._held[btn_num]           = False
 
+        # Double-tap detection: second press within window + double_tap block configured
+        v2_blocks        = btn_cfg.get("_v2_blocks", {})
+        double_tap_block = v2_blocks.get("double_tap", {})
+        if (
+            (now - last_press) < self._DOUBLE_TAP_WINDOW
+            and double_tap_block.get(CONF_ACTION_TYPE, ACTION_NONE) != ACTION_NONE
+        ):
+            _LOGGER.info(
+                "'%s': button %d DOUBLE TAP (%.3fs since last press)",
+                self.name, btn_num, now - last_press,
+            )
+            merged = self._merge_v2_block(btn_cfg, double_tap_block)
+            self.hass.async_create_task(self._dispatch(btn_num, merged))
+            return
+
         action = btn_cfg.get(CONF_ACTION_TYPE)
+        hold_block = v2_blocks.get("hold", {})
+        has_custom_hold = (
+            hold_block.get(CONF_ACTION_TYPE, ACTION_NONE) != ACTION_NONE
+            and not btn_cfg.get("cycle_dim", False)
+        )
         # cycle_dim=true on any button opts into hold-to-dim regardless of action type
-        wants_hold = action in self._HOLD_ACTIONS or btn_cfg.get("cycle_dim", False)
+        wants_hold = action in self._HOLD_ACTIONS or btn_cfg.get("cycle_dim", False) or has_custom_hold
         if not wants_hold:
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
         else:
@@ -1829,8 +1887,13 @@ class LutronKeypadsController:
         if confirm is not None:
             confirm.cancel()
         btn_cfg = self._buttons.get(btn_num)
-        if btn_cfg is not None and btn_cfg.get(CONF_ACTION_TYPE) in self._HOLD_ACTIONS:
-            self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
+        if btn_cfg is not None:
+            action          = btn_cfg.get(CONF_ACTION_TYPE)
+            was_hold_armed  = confirm is not None  # hold timer was live when released
+            # Dispatch tap for: normal hold-capable actions OR buttons that had the
+            # hold timer armed because they carry a custom hold block
+            if action in self._HOLD_ACTIONS or was_hold_armed:
+                self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
 
     @callback
     def _on_hold_event(self, btn_num: int) -> None:
@@ -1845,6 +1908,22 @@ class LutronKeypadsController:
 
         action    = btn_cfg.get(CONF_ACTION_TYPE)
         cycle_dim = btn_cfg.get("cycle_dim", False)
+
+        # Custom hold action (v2): dispatch it instead of ramp when cycle_dim is off
+        v2_blocks  = btn_cfg.get("_v2_blocks", {})
+        hold_block = v2_blocks.get("hold", {})
+        if (
+            not cycle_dim
+            and hold_block.get(CONF_ACTION_TYPE, ACTION_NONE) != ACTION_NONE
+        ):
+            _LOGGER.info(
+                "'%s': button %d HOLD — dispatching custom hold action '%s'",
+                self.name, btn_num, hold_block.get(CONF_ACTION_TYPE),
+            )
+            self._held[btn_num] = True
+            merged = self._merge_v2_block(btn_cfg, hold_block)
+            self.hass.async_create_task(self._dispatch(btn_num, merged))
+            return
 
         if action == ACTION_RAISE:
             direction = "up"
@@ -1986,6 +2065,21 @@ class LutronKeypadsController:
             return st is not None and st.state == "on"
         return False
 
+    def _merge_v2_block(self, btn_cfg: dict, block: dict) -> dict:
+        """Return a dispatch-ready config merging btn_cfg with a v2 sub-block (double_tap/hold)."""
+        merged = dict(btn_cfg)
+        merged[CONF_ACTION_TYPE]    = block.get(CONF_ACTION_TYPE, ACTION_NONE)
+        raw_target                  = block.get(CONF_ACTION_TARGET, "")
+        merged[CONF_ACTION_TARGET]  = _normalize_action_target(raw_target, merged[CONF_ACTION_TYPE])
+        merged[CONF_ENTITY_SETTINGS] = block.get(CONF_ENTITY_SETTINGS, {})
+        if block.get(CONF_TARGET_BRIGHTNESS):
+            merged[CONF_TARGET_BRIGHTNESS] = int(block[CONF_TARGET_BRIGHTNESS])
+        if block.get(CONF_TARGET_COLOR_TEMP):
+            merged[CONF_TARGET_COLOR_TEMP] = int(block[CONF_TARGET_COLOR_TEMP])
+        if block.get("scene_group"):
+            merged["scene_group"] = block["scene_group"]
+        return merged
+
     def _get_btn_light_entities(self, btn_cfg: dict) -> list[str]:
         """Return light entity_ids rampable for this button's action."""
         action = btn_cfg.get(CONF_ACTION_TYPE)
@@ -2065,19 +2159,32 @@ class LutronKeypadsController:
             entity_settings_map: dict = btn_cfg.get(CONF_ENTITY_SETTINGS, {})
             led_mode   = btn_cfg.get(CONF_LED_MODE, LED_MODE_ROOM)
 
+            v2_blocks_et     = btn_cfg.get("_v2_blocks", {})
+            off_level_block  = v2_blocks_et.get("off_level", {})
+            off_level_ent    = off_level_block.get("entity_settings", {})
+
             if led_mode == LED_MODE_SCENE:
                 # Scene Mode: toggle axis is whether the scene is currently active
                 # (LED state), NOT whether the entity is physically on.
                 # Lights on but at wrong level → LED off → button must ACTIVATE
                 # the scene, not turn everything off.
                 if self._is_btn_led_on(btn_num):
-                    # Scene active → deactivate: turn everything off
+                    # Scene active → deactivate: turn off or apply off-level brightness
                     for eid in entity_ids:
-                        domain = eid.split(".")[0]
-                        await self.hass.services.async_call(
-                            domain, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: eid},
-                            blocking=True,
-                        )
+                        domain     = eid.split(".")[0]
+                        off_ent    = off_level_ent.get(eid, {})
+                        off_bri    = int(off_ent.get("brightness") or 0)
+                        if domain == "light" and off_bri > 0:
+                            await self.hass.services.async_call(
+                                "light", SERVICE_TURN_ON,
+                                {ATTR_ENTITY_ID: eid, "brightness_pct": off_bri},
+                                blocking=True,
+                            )
+                        else:
+                            await self.hass.services.async_call(
+                                domain, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: eid},
+                                blocking=True,
+                            )
                     self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
                     await self._write_led_entity(btn_num, False)
                 else:
@@ -2086,10 +2193,12 @@ class LutronKeypadsController:
                     # light actually reaches the target level.
                     for eid in entity_ids:
                         if eid.startswith("light."):
-                            ent_cfg = entity_settings_map.get(eid, {})
-                            ent_bri = int(ent_cfg.get("brightness") or global_bri)
-                            ent_cct = int(ent_cfg.get("color_temp") or global_cct)
-                            ent_hs  = ent_cfg.get("hs_color")
+                            ent_cfg  = entity_settings_map.get(eid, {})
+                            ent_bri  = int(ent_cfg.get("brightness") or global_bri)
+                            ent_cct  = int(ent_cfg.get("color_temp") or global_cct)
+                            ent_hs   = ent_cfg.get("hs_color")
+                            ent_fade = float(ent_cfg.get("fade") or 0)
+                            ent_dly  = float(ent_cfg.get("delay") or 0)
                             svc_data: dict[str, Any] = {ATTR_ENTITY_ID: eid}
                             if ent_bri > 0:
                                 svc_data["brightness_pct"] = ent_bri
@@ -2097,6 +2206,10 @@ class LutronKeypadsController:
                                 svc_data["color_temp_kelvin"] = ent_cct
                             if ent_hs:
                                 svc_data["hs_color"] = ent_hs
+                            if ent_fade > 0:
+                                svc_data["transition"] = ent_fade
+                            if ent_dly > 0:
+                                await asyncio.sleep(ent_dly)
                             await self.hass.services.async_call(
                                 "light", SERVICE_TURN_ON, svc_data, blocking=True,
                             )
@@ -2128,10 +2241,12 @@ class LutronKeypadsController:
                     # Off + targets configured → turn on at per-entity target state
                     for eid in entity_ids:
                         if eid.startswith("light."):
-                            ent_cfg = entity_settings_map.get(eid, {})
-                            ent_bri = int(ent_cfg.get("brightness") or global_bri)
-                            ent_cct = int(ent_cfg.get("color_temp") or global_cct)
-                            ent_hs  = ent_cfg.get("hs_color")
+                            ent_cfg  = entity_settings_map.get(eid, {})
+                            ent_bri  = int(ent_cfg.get("brightness") or global_bri)
+                            ent_cct  = int(ent_cfg.get("color_temp") or global_cct)
+                            ent_hs   = ent_cfg.get("hs_color")
+                            ent_fade = float(ent_cfg.get("fade") or 0)
+                            ent_dly  = float(ent_cfg.get("delay") or 0)
                             svc_data = {ATTR_ENTITY_ID: eid}
                             if ent_bri > 0:
                                 svc_data["brightness_pct"] = ent_bri
@@ -2139,6 +2254,10 @@ class LutronKeypadsController:
                                 svc_data["color_temp_kelvin"] = ent_cct
                             if ent_hs:
                                 svc_data["hs_color"] = ent_hs
+                            if ent_fade > 0:
+                                svc_data["transition"] = ent_fade
+                            if ent_dly > 0:
+                                await asyncio.sleep(ent_dly)
                             await self.hass.services.async_call(
                                 "light", SERVICE_TURN_ON, svc_data, blocking=True,
                             )
@@ -2150,6 +2269,25 @@ class LutronKeypadsController:
                             )
                     self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
                     await self._write_led_entity(btn_num, True)
+                elif pre_on and off_level_ent:
+                    # Was on → apply off-level (per-entity) instead of plain toggle
+                    for eid in entity_ids:
+                        domain  = eid.split(".")[0]
+                        off_ent = off_level_ent.get(eid, {})
+                        off_bri = int(off_ent.get("brightness") or 0)
+                        if domain == "light" and off_bri > 0:
+                            await self.hass.services.async_call(
+                                "light", SERVICE_TURN_ON,
+                                {ATTR_ENTITY_ID: eid, "brightness_pct": off_bri},
+                                blocking=True,
+                            )
+                        else:
+                            await self.hass.services.async_call(
+                                domain, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: eid},
+                                blocking=True,
+                            )
+                    self._last_action = {"type": ACTION_ENTITY_TOGGLE, "entities": entity_ids}
+                    await self._write_led_entity(btn_num, False)
                 else:
                     await self._entity_toggle(target)
                     await self._write_led_entity(btn_num, not pre_on)
