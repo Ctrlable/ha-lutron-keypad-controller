@@ -1337,6 +1337,7 @@ class LutronKeypadsController:
         self._ramp_tasks:   dict[int, asyncio.Task] = {}  # active ramp coroutine per button
         self._ramp_dirs:        dict[int, str]   = {}  # last ramp direction per button
         self._ramp_end_times:   dict[int, float] = {}  # time last ramp ended per button
+        self._dispatched_on_press: set[int]      = set()  # buttons that already fired on press
 
         # Sensors to notify when _last_action changes
         self._state_sensors: list = []
@@ -1845,6 +1846,7 @@ class LutronKeypadsController:
         old_ramp = self._ramp_tasks.pop(btn_num, None)
         if old_ramp is not None and not old_ramp.done():
             old_ramp.cancel()
+        self._dispatched_on_press.discard(btn_num)
 
         now = asyncio.get_event_loop().time()
         last_press = self._last_press_times.get(btn_num, 0)
@@ -1879,6 +1881,21 @@ class LutronKeypadsController:
         wants_hold = action in self._HOLD_ACTIONS or btn_cfg.get("cycle_dim", False) or has_custom_hold
         if not wants_hold:
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
+        elif action == ACTION_ENTITY_TOGGLE and btn_cfg.get("cycle_dim", False):
+            # Dispatch the toggle immediately on press for instant light response,
+            # then arm the hold timer so a long press can still start the ramp.
+            # This handles hardware that sends only one release at 400-600 ms
+            # (always after the 300 ms hold window) by not relying on tap detection.
+            _LOGGER.info(
+                "'%s': button %d PRESS (entity_toggle+cycle_dim) — dispatching immediately",
+                self.name, btn_num,
+            )
+            self._dispatched_on_press.add(btn_num)
+            self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
+            handle = self.hass.loop.call_later(
+                self._HOLD_CONFIRM, self._on_hold_event, btn_num,
+            )
+            self._confirm_handles[btn_num] = handle
         else:
             # Arm hold timer starting from press — fires if finger is still down
             handle = self.hass.loop.call_later(
@@ -1920,6 +1937,7 @@ class LutronKeypadsController:
                 ramp.cancel()
             self._held.pop(btn_num, None)
             self._ramp_end_times[btn_num] = now
+            self._dispatched_on_press.discard(btn_num)
             return
 
         # ── Fast release within bounce window — hardware glitch, skip it ─────
@@ -1931,7 +1949,11 @@ class LutronKeypadsController:
         if confirm is not None:
             confirm.cancel()
         btn_cfg = self._buttons.get(btn_num)
-        if btn_cfg is not None and confirm is not None:
+        if btn_num in self._dispatched_on_press:
+            # Action was already dispatched on press (entity_toggle + cycle_dim);
+            # hold timer fired but ramp hadn't started yet — just clean up.
+            self._dispatched_on_press.discard(btn_num)
+        elif btn_cfg is not None and confirm is not None:
             _LOGGER.info(
                 "'%s': button %d TAP (elapsed=%.3fs)",
                 self.name, btn_num, elapsed,
