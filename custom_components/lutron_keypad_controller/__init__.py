@@ -1329,9 +1329,10 @@ class LutronKeypadsController:
             self._leap_btn_map = {int(k): v for k, v in stored.items()}
 
         # Press-and-hold tracking (synchronous call_later state machine)
-        self._press_times:      dict[int, float] = {}  # monotonic time of last press
-        self._last_press_times: dict[int, float] = {}  # time of previous press (double-tap)
-        self._held:             dict[int, bool]  = {}  # True while hold-event ramp is active
+        self._press_times:       dict[int, float] = {}  # monotonic time of last press
+        self._last_press_times:  dict[int, float] = {}  # time of previous press (double-tap)
+        self._last_dispatch_times: dict[int, float] = {}  # time of last TAP/action dispatch
+        self._held:              dict[int, bool]  = {}  # True while hold-event ramp is active
         self._confirm_handles:  dict             = {}  # call_later handle: hold-confirm window
         self._ramp_tasks:   dict[int, asyncio.Task] = {}  # active ramp coroutine per button
         self._ramp_dirs:        dict[int, str]   = {}  # last ramp direction per button
@@ -1368,6 +1369,7 @@ class LutronKeypadsController:
             task.cancel()
         self._ramp_tasks.clear()
         self._press_times.clear()
+        self._last_dispatch_times.clear()
         self._held.clear()
         self._ramp_end_times.clear()
 
@@ -1805,14 +1807,16 @@ class LutronKeypadsController:
 
     # ── Press / release / hold event ─────────────────────────────────────────
     #
-    # Hardware model: Lutron keypads send exactly ONE press event when the
-    # button is pushed and ONE release event when the finger lifts.
+    # Hardware model: the Lutron Caseta bridge batches press + release together
+    # when a button is tapped quickly (both events arrive within ~1 ms of each
+    # other).  For a physical hold the bridge sends press immediately and delays
+    # the release until the finger actually lifts.
     #
     #   PRESS  → arm hold timer (_HOLD_CONFIRM ms).
     #            Non-hold actions dispatch immediately on press.
     #
     #   RELEASE (before hold timer fires) → TAP: cancel timer → dispatch.
-    #   Releases faster than _BOUNCE_WINDOW are treated as electrical noise.
+    #            This includes the ~1 ms batched release for quick taps.
     #
     #   _on_hold_event fires (_HOLD_CONFIRM ms after press, no release yet):
     #            HOLD: start ramp (or dispatch if LED is off / no rampable lights).
@@ -1821,6 +1825,11 @@ class LutronKeypadsController:
     #   RELEASE (after hold timer fires / ramp active) → stop ramp.
     _HOLD_CONFIRM       = 0.30   # seconds after PRESS before hold event fires
     _HOLD_CONFIRM_CYCLE = 0.70   # longer window for entity_toggle+cycle_dim: taps run 450-600ms
+    # Bridge sometimes sends 3-5 duplicate press+release pairs within ~30 ms for
+    # a single physical press (radio re-transmit / batching).  Ignore new presses
+    # that arrive within this window after a dispatch.  Must be >> 30 ms but well
+    # below a deliberate double-tap (~300 ms).
+    _PRESS_DEBOUNCE     = 0.20   # seconds
     _DOUBLE_TAP_WINDOW  = 0.40   # seconds — second press within this window triggers double_tap
     _RAMP_STEP_PCT      = 10     # brightness % per ramp tick
     _RAMP_INTERVAL      = 0.40   # seconds between ticks (also used as transition time)
@@ -1833,14 +1842,24 @@ class LutronKeypadsController:
     @callback
     def _on_press(self, btn_num: int, btn_cfg: dict) -> None:
         """Synchronous press handler."""
+        now = asyncio.get_event_loop().time()
+
+        # Discard bridge-duplicate presses that arrive within _PRESS_DEBOUNCE of
+        # the last dispatch (radio re-transmits arrive ~7-30 ms apart).
+        last_dispatch = self._last_dispatch_times.get(btn_num, 0)
+        if (now - last_dispatch) < self._PRESS_DEBOUNCE:
+            _LOGGER.debug(
+                "'%s': button %d press ignored — %.0fms since last dispatch (debounce)",
+                self.name, btn_num, (now - last_dispatch) * 1000,
+            )
+            return
+
         old_confirm = self._confirm_handles.pop(btn_num, None)
         if old_confirm is not None:
             old_confirm.cancel()
         old_ramp = self._ramp_tasks.pop(btn_num, None)
         if old_ramp is not None and not old_ramp.done():
             old_ramp.cancel()
-
-        now = asyncio.get_event_loop().time()
         last_press = self._last_press_times.get(btn_num, 0)
         self._last_press_times[btn_num] = now
 
@@ -1871,6 +1890,7 @@ class LutronKeypadsController:
         # cycle_dim=true on any button opts into hold-to-dim regardless of action type
         wants_hold = action in self._HOLD_ACTIONS or btn_cfg.get("cycle_dim", False) or has_custom_hold
         if not wants_hold:
+            self._last_dispatch_times[btn_num] = now
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
         else:
             # Arm hold timer. entity_toggle+cycle_dim gets a longer window (700ms)
@@ -1886,17 +1906,13 @@ class LutronKeypadsController:
             )
             self._confirm_handles[btn_num] = handle
 
-    # Releases faster than this are electrical noise — skip them.
-    # Real taps lift at ≥ ~150 ms; 75 ms leaves safe margin.
-    _BOUNCE_WINDOW = 0.075  # seconds
-
     @callback
     def _handle_release(self, btn_num: int) -> None:
         """Synchronous release handler — drives the press/hold state machine.
 
-        Lutron keypads send exactly one release when the finger lifts.
-          - elapsed < _BOUNCE_WINDOW → electrical noise, skip
-          - elapsed ≥ _BOUNCE_WINDOW before hold timer fires → TAP, dispatch
+        For quick taps the bridge batches press+release (~1 ms apart).
+        For holds the bridge delays the release until physical lift.
+          - release before hold timer fires → TAP, cancel timer, dispatch
           - hold timer fired first → HOLD was running; this release stops it
         """
         now     = asyncio.get_event_loop().time()
@@ -1932,11 +1948,7 @@ class LutronKeypadsController:
                         self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
             return
 
-        # ── Fast release within bounce window — hardware glitch, skip it ─────
-        if elapsed < self._BOUNCE_WINDOW:
-            return
-
-        # ── Real lift before hold timer fired → confirmed TAP ────────────────
+        # ── Release before hold timer fired → confirmed TAP ─────────────────
         confirm = self._confirm_handles.pop(btn_num, None)
         if confirm is not None:
             confirm.cancel()
@@ -1946,6 +1958,7 @@ class LutronKeypadsController:
                 "'%s': button %d TAP (elapsed=%.3fs)",
                 self.name, btn_num, elapsed,
             )
+            self._last_dispatch_times[btn_num] = now
             self.hass.async_create_task(self._dispatch(btn_num, btn_cfg))
 
     @callback
