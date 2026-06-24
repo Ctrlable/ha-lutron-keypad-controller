@@ -1,7 +1,5 @@
 {
   "name": "Lutron Keypad Controller",
   "render_readme": true,
-  "homeassistant": "2023.6.0",
-  "zip_release": true,
-  "filename": "lutron_keypad_controller.zip"
+  "homeassistant": "2023.6.0"
 }
