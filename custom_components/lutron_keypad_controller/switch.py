@@ -1,5 +1,6 @@
 from __future__ import annotations
-_C='Button %d: dispatch raised an exception: %s'
+_D='Button %d: dispatch raised an exception: %s'
+_C=True
 _B=False
 _A=None
 import logging
@@ -7,14 +8,16 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant,callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo,EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.restore_state import RestoreEntity
 from.const import DOMAIN,CONF_KEYPAD_TYPE,KEYPAD_GENERIC,get_button_layout
 _LOGGER=logging.getLogger(__name__)
-async def async_setup_entry(hass,entry,async_add_entities):B=entry;A=[LutronButtonSwitch(hass,B,A['number'],A['is_raise'],A['is_lower'])for A in get_button_layout(B.data)];async_add_entities(A,True)
+def _keypad_device_info(entry):A=entry;return DeviceInfo(identifiers={(DOMAIN,A.entry_id)},name=A.title,manufacturer='Lutron',model=A.data.get(CONF_KEYPAD_TYPE,KEYPAD_GENERIC).replace('_',' ').title(),configuration_url=f"homeassistant://lutron-keypads?entry={A.entry_id}")
+async def async_setup_entry(hass,entry,async_add_entities):A=entry;B=[LutronButtonSwitch(hass,A,B['number'],B['is_raise'],B['is_lower'])for B in get_button_layout(A.data)];B.append(LutronSidebarSwitch(hass,A));async_add_entities(B,_C)
 class LutronButtonSwitch(SwitchEntity):
-	_attr_has_entity_name=True;_attr_should_poll=_B
+	_attr_has_entity_name=_C;_attr_should_poll=_B
 	def __init__(A,hass,entry,btn_number,is_raise,is_lower):C=entry;B=btn_number;A._hass=hass;A._entry=C;A._btn_number=B;A._btn_key=str(B);A._is_raise=is_raise;A._is_lower=is_lower;A._led_state=_B;A._led_entity=_A;A._attr_unique_id=f"{C.entry_id}_button_{B}_led"
 	@property
 	def name(self):A=self;B=A._entry.options.get('buttons',{}).get(A._btn_key,{});return B.get('label')or f"Button {A._btn_number}"
@@ -25,7 +28,7 @@ class LutronButtonSwitch(SwitchEntity):
 		if A._is_lower:return'mdi:arrow-down-circle'
 		return'mdi:circle-slice-8'if A._led_state else'mdi:circle-outline'
 	@property
-	def device_info(self):A=self;return DeviceInfo(identifiers={(DOMAIN,A._entry.entry_id)},name=A._entry.title,manufacturer='Lutron',model=A._entry.data.get(CONF_KEYPAD_TYPE,KEYPAD_GENERIC).replace('_',' ').title())
+	def device_info(self):return _keypad_device_info(self._entry)
 	@property
 	def is_on(self):return self._led_state
 	def update_led_state(A,is_on):A._led_state=is_on;A.async_write_ha_state()
@@ -50,9 +53,9 @@ class LutronButtonSwitch(SwitchEntity):
 		if B is _A:_LOGGER.warning('Button %d: cannot turn on — controller not available',A._btn_number);return
 		C=B._buttons.get(A._btn_number)
 		if C is _A:_LOGGER.debug('Button %d: no action configured',A._btn_number);return
-		if not A._led_entity:A._led_state=True;A.async_write_ha_state()
+		if not A._led_entity:A._led_state=_C;A.async_write_ha_state()
 		try:await B._dispatch(A._btn_number,C)
-		except Exception as D:_LOGGER.error(_C,A._btn_number,D)
+		except Exception as D:_LOGGER.error(_D,A._btn_number,D)
 	async def async_turn_off(A,**G):
 		from.const import ACTION_ENTITY_TOGGLE as D,CONF_ACTION_TYPE as E;B=A._get_controller()
 		if B is _A:A.async_write_ha_state();return
@@ -61,5 +64,15 @@ class LutronButtonSwitch(SwitchEntity):
 		if C.get(E)==D:
 			if not A._led_entity:A._led_state=_B;A.async_write_ha_state()
 			try:await B._dispatch(A._btn_number,C)
-			except Exception as F:_LOGGER.error(_C,A._btn_number,F)
+			except Exception as F:_LOGGER.error(_D,A._btn_number,F)
 		else:A.async_write_ha_state()
+class LutronSidebarSwitch(SwitchEntity,RestoreEntity):
+	_attr_has_entity_name=_C;_attr_should_poll=_B;_attr_entity_category=EntityCategory.CONFIG;_attr_name='Show in sidebar';_attr_icon='mdi:dock-left'
+	def __init__(A,hass,entry):B=entry;A._hass=hass;A._entry=B;A._attr_unique_id=f"{B.entry_id}_show_in_sidebar";A._attr_is_on=_B
+	@property
+	def device_info(self):return _keypad_device_info(self._entry)
+	def _apply(A):from.import async_set_sidebar as B;B(A._hass,A._entry.entry_id,A._attr_is_on)
+	async def async_added_to_hass(A):await super().async_added_to_hass();B=await A.async_get_last_state();A._attr_is_on=bool(B and B.state=='on');A._apply()
+	async def async_will_remove_from_hass(A):from.import async_set_sidebar as B;B(A._hass,A._entry.entry_id,_B)
+	async def async_turn_on(A,**B):A._attr_is_on=_C;A._apply();A.async_write_ha_state()
+	async def async_turn_off(A,**B):A._attr_is_on=_B;A._apply();A.async_write_ha_state()
