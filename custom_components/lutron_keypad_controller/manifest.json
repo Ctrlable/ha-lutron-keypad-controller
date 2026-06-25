@@ -1,7 +1,7 @@
 {
   "domain": "lutron_keypad_controller",
   "name": "Lutron Keypad Controller",
-  "version": "4.11.13",
+  "version": "4.11.14",
   "description": "Advanced button controller for Lutron SeeTouch, Sunnata, Alisee, Palladiom, and Tabletop keypads. Intercepts lutron_caseta_button_event events and dispatches configurable actions per button.",
   "documentation": "https://github.com/Ctrlable/ha-lutron-keypad-controller",
   "dependencies": [],
