@@ -19,24 +19,24 @@ _k='lutron_type'
 _j='caseta'
 _i='model'
 _h='leap_button_map'
-_g='lower_button'
-_f='raise_button'
-_e='-down'
-_d=' down'
-_c='-lower'
-_b=' lower'
-_a='-up'
-_Z=' up'
-_Y='-raise'
-_X=' raise'
-_W='leap_button_number'
-_V='button_number'
-_U='pico'
-_T='tabletop'
-_S='seetouch'
-_R='sunnata'
-_Q='palladiom'
-_P='lip'
+_g='-down'
+_f=' down'
+_e='-lower'
+_d=' lower'
+_c='-up'
+_b=' up'
+_a='-raise'
+_Z=' raise'
+_Y='leap_button_number'
+_X='button_number'
+_W='pico'
+_V='tabletop'
+_U='seetouch'
+_T='sunnata'
+_S='palladiom'
+_R='lip'
+_Q='lower_button'
+_P='raise_button'
 _O='configurable_buttons'
 _N='area_name'
 _M='lutron_caseta'
@@ -65,8 +65,8 @@ import homeassistant.helpers.config_validation as cv
 from.const import DOMAIN,ACTION_ENTITY_TOGGLE,CONF_DEVICE_SERIAL,CONF_DEVICE_NAME,CONF_AREA_NAME,CONF_KEYPAD_TYPE,CONF_ACTION_TYPE,CONF_ACTION_TARGET,CONF_LED_ENTITY,CONF_LED_INVERT,CONF_LED_MODE,CONF_TARGET_BRIGHTNESS,CONF_TARGET_COLOR_TEMP,LED_MODE_ROOM,LED_MODE_SCENE,ACTION_STATEFUL_SCENE,KEYPAD_SEETOUCH,KEYPAD_SEETOUCH_HYBRID,KEYPAD_SUNNATA,KEYPAD_SUNNATA_HYBRID,KEYPAD_ALISEE,KEYPAD_PALLADIOM,KEYPAD_TABLETOP,KEYPAD_PICO,KEYPAD_GENERIC,ACTION_NONE,ACTION_RAISE,ACTION_LOWER,ACTION_TYPE_LABELS,ACTION_TYPE_DOMAINS,ACTION_TYPES_NEEDING_ENTITY,MULTI_ENTITY_ACTIONS,get_button_list,get_button_layout
 _LOGGER=logging.getLogger(__name__)
 LUTRON_TYPE_MAP={'SeeTouchKeypad':KEYPAD_SEETOUCH,'SeeTouchHybridKeypad':KEYPAD_SEETOUCH_HYBRID,'HybridSeeTouch':KEYPAD_SEETOUCH_HYBRID,'HybridSeeTouchKeypad':KEYPAD_SEETOUCH_HYBRID,'SeeTouch':KEYPAD_SEETOUCH,'SunnataKeypad':KEYPAD_SUNNATA,'SunnataHybridKeypad':KEYPAD_SUNNATA_HYBRID,'SunnataSwitchingKeypad':KEYPAD_SUNNATA,'Sunnata':KEYPAD_SUNNATA,'AlisseKeypad':KEYPAD_ALISEE,'AlisseSeeTouchKeypad':KEYPAD_ALISEE,'Alisse':KEYPAD_ALISEE,'AliseeKeypad':KEYPAD_ALISEE,'AliseeSeeTouchKeypad':KEYPAD_ALISEE,'Alisee':KEYPAD_ALISEE,'GrafikEyeQS':KEYPAD_ALISEE,'GRAFIK Eye QS':KEYPAD_ALISEE,'PalladiomKeypad':KEYPAD_PALLADIOM,'PalladiomKeypad2Button':KEYPAD_PALLADIOM,'PalladiomKeypad3Button':KEYPAD_PALLADIOM,'PalladiomKeypad4Button':KEYPAD_PALLADIOM,'PalladiomKeypad5Button':KEYPAD_PALLADIOM,'PalladiomKeypad7Button':KEYPAD_PALLADIOM,'Palladiom':KEYPAD_PALLADIOM,'PalladiomWirelessKeypad':KEYPAD_PALLADIOM,'PalladiomSeeTouchKeypad':KEYPAD_PALLADIOM,'PalladiomHybridKeypad':KEYPAD_PALLADIOM,'TabletopSeeTouch':KEYPAD_TABLETOP,'SeeTouchTabletop':KEYPAD_TABLETOP,'TabletopKeypad':KEYPAD_TABLETOP,'Pico1Button':KEYPAD_PICO,'Pico2Button':KEYPAD_PICO,'Pico2ButtonRaiseLower':KEYPAD_PICO,'Pico3Button':KEYPAD_PICO,'Pico3ButtonRaiseLower':KEYPAD_PICO,'Pico4Button':KEYPAD_PICO,'Pico4ButtonScene':KEYPAD_PICO,'Pico4ButtonZone':KEYPAD_PICO,'Pico4Button2Group':KEYPAD_PICO,'FourGroupRemote':KEYPAD_PICO,'PaddleRemote':KEYPAD_PICO}
-LUTRON_TYPE_FUZZY=[('aliss',KEYPAD_ALISEE),(_q,KEYPAD_ALISEE),(_Q,KEYPAD_PALLADIOM),(_R,KEYPAD_SUNNATA),(_r,KEYPAD_SEETOUCH_HYBRID),(_S,KEYPAD_SEETOUCH),(_T,KEYPAD_TABLETOP),(_U,KEYPAD_PICO),(_s,KEYPAD_PICO),(_J,KEYPAD_SEETOUCH)]
-BUTTON_TYPE_KEYWORDS={_J,_U,_s,_S,_R,'aliss',_q,_Q,_T,_r}
+LUTRON_TYPE_FUZZY=[('aliss',KEYPAD_ALISEE),(_q,KEYPAD_ALISEE),(_S,KEYPAD_PALLADIOM),(_T,KEYPAD_SUNNATA),(_r,KEYPAD_SEETOUCH_HYBRID),(_U,KEYPAD_SEETOUCH),(_V,KEYPAD_TABLETOP),(_W,KEYPAD_PICO),(_s,KEYPAD_PICO),(_J,KEYPAD_SEETOUCH)]
+BUTTON_TYPE_KEYWORDS={_J,_W,_s,_U,_T,'aliss',_q,_S,_V,_r}
 def _infer_keypad_type(device_type):
 	A=device_type
 	if A in LUTRON_TYPE_MAP:return LUTRON_TYPE_MAP[A]
@@ -112,7 +112,7 @@ def _build_device_options(keypads):
 		D=A.get(_N,'Unknown Area');E=A.get(_B,'Unknown');F=_infer_keypad_type(A.get(_H,''));B[C]=f"{D} — {E}  [{F}]"
 	return B
 def _resolve_btn_num(bd):
-	for B in(_V,_W):
+	for B in(_X,_Y):
 		A=bd.get(B)
 		if A is not _A:
 			try:return int(A)
@@ -131,48 +131,48 @@ def _build_layout_from_button_devices(candidates,area_name,device_name):
 	if not B:return{}
 	C=_A;D=_A;F={};G={}
 	for H in I:
-		E=H.get(_B,'');J=E.lower();A=_resolve_btn_num(H);K=H.get(_W)
+		E=H.get(_B,'');J=E.lower();A=_resolve_btn_num(H);K=H.get(_Y)
 		if A is not _A and K is not _A:
 			try:
 				L=int(K)
 				if L!=A:G[str(L)]=A
 			except(TypeError,ValueError):pass
 		if A is _A:continue
-		if J.endswith((_X,_Y,_Z,_a))or _RAISE_NAME_RE.search(E):C=A
-		elif J.endswith((_b,_c,_d,_e))or _LOWER_NAME_RE.search(E):D=A
+		if J.endswith((_Z,_a,_b,_c))or _RAISE_NAME_RE.search(E):C=A
+		elif J.endswith((_d,_e,_f,_g))or _LOWER_NAME_RE.search(E):D=A
 		M=_strip_engraving(E,area_name,device_name)
 		if M:F[str(A)]=M
-	N=[A for A in B if A not in(C,D)];_LOGGER.debug('button_devices layout: %d total, configurable=%s raise=%s lower=%s names=%s leap_map=%s',len(B),N,C,D,F,G);return{_K:B,_O:N,_f:C,_g:D,_I:F,_h:G}
+	N=[A for A in B if A not in(C,D)];_LOGGER.debug('button_devices layout: %d total, configurable=%s raise=%s lower=%s names=%s leap_map=%s',len(B),N,C,D,F,G);return{_K:B,_O:N,_P:C,_Q:D,_I:F,_h:G}
 def _build_layout_from_inline_buttons(buttons_list,area_name,device_name,device_full_name=''):
 	A=[];C=_A;D=_A;F={};G={};O=device_name or device_full_name
 	for H in buttons_list:
-		I=H.get(_V)
+		I=H.get(_X)
 		if I is _A:continue
 		try:B=int(I)
 		except(TypeError,ValueError):continue
 		E=H.get(_B,'');J=E.lower()
-		if J.endswith((_X,_Y,_Z,_a))or _RAISE_NAME_RE.search(E):C=B
-		elif J.endswith((_b,_c,_d,_e))or _LOWER_NAME_RE.search(E):D=B
+		if J.endswith((_Z,_a,_b,_c))or _RAISE_NAME_RE.search(E):C=B
+		elif J.endswith((_d,_e,_f,_g))or _LOWER_NAME_RE.search(E):D=B
 		A.append(B);K=_strip_engraving(E,area_name,O)
 		if K:F[str(B)]=K
-		L=H.get(_W)
+		L=H.get(_Y)
 		if L is not _A:
 			try:
 				M=int(L)
 				if M!=B:G[str(M)]=B
 			except(TypeError,ValueError):pass
-	A=sorted(set(A));N=[A for A in A if A not in(C,D)];_LOGGER.debug('inline-buttons layout: %d total, configurable=%s raise=%s lower=%s names=%s leap_map=%s',len(A),N,C,D,F,G);return{_K:A,_O:N,_f:C,_g:D,_I:F,_h:G}
+	A=sorted(set(A));N=[A for A in A if A not in(C,D)];_LOGGER.debug('inline-buttons layout: %d total, configurable=%s raise=%s lower=%s names=%s leap_map=%s',len(A),N,C,D,F,G);return{_K:A,_O:N,_P:C,_Q:D,_I:F,_h:G}
 def _build_layout_from_bridge_buttons(candidates,area_name,device_name,has_raise_lower=True):
 	J=has_raise_lower;D=[];A=_A;B=_A;H={};I=[]
 	for F in candidates:
-		K=F.get(_V)
+		K=F.get(_X)
 		if K is _A:continue
 		try:E=int(K)
 		except(TypeError,ValueError):continue
 		G=F.get('button_name')or F.get(_B,'');L=G.lower();O=F.get('button_led')is not _A
 		if J:
-			if L.endswith((_X,_Y,_Z,_a))or _RAISE_NAME_RE.search(G):A=E
-			elif L.endswith((_b,_c,_d,_e))or _LOWER_NAME_RE.search(G):B=E
+			if L.endswith((_Z,_a,_b,_c))or _RAISE_NAME_RE.search(G):A=E
+			elif L.endswith((_d,_e,_f,_g))or _LOWER_NAME_RE.search(G):B=E
 			elif not O:I.append(E)
 		D.append(E);M=_strip_engraving(G,area_name,device_name)
 		if M:H[str(E)]=M
@@ -183,7 +183,7 @@ def _build_layout_from_bridge_buttons(candidates,area_name,device_name,has_raise
 		for C in sorted(I):
 			if A is _A and C!=B:A=C
 			elif B is _A and C!=A:B=C
-	D=sorted(set(D));N=[C for C in D if C not in(A,B)];_LOGGER.debug('bridge.buttons layout: %d total, configurable=%s raise=%s lower=%s names=%s',len(D),N,A,B,H);return{_K:D,_O:N,_f:A,_g:B,_I:H,_h:{}}
+	D=sorted(set(D));N=[C for C in D if C not in(A,B)];_LOGGER.debug('bridge.buttons layout: %d total, configurable=%s raise=%s lower=%s names=%s',len(D),N,A,B,H);return{_K:D,_O:N,_P:A,_Q:B,_I:H,_h:{}}
 def _detect_button_layout(hass,serial,keypad_type,device_name='',area_name='',device_id='',device_data=_A):
 	H=area_name;G=device_name;C=device_id;A=serial
 	for E in _iter_lutron_bridges(hass):
@@ -208,32 +208,32 @@ def _detect_button_layout(hass,serial,keypad_type,device_name='',area_name='',de
 	_LOGGER.debug('Device serial=%s device_id=%s not found on any bridge; falling back to keypad-type static layout.',A,C);return{}
 def _infer_lip_keypad_type(model):
 	A=(model or'').lower()
-	if _Q in A:return KEYPAD_PALLADIOM
-	if _R in A:return KEYPAD_SUNNATA
-	if _S in A or'see touch'in A:return KEYPAD_SEETOUCH
+	if _S in A:return KEYPAD_PALLADIOM
+	if _T in A:return KEYPAD_SUNNATA
+	if _U in A or'see touch'in A:return KEYPAD_SEETOUCH
 	if'alisse'in A or'alise'in A:return KEYPAD_ALISEE
-	if _T in A or'table top'in A:return KEYPAD_TABLETOP
-	if _U in A:return KEYPAD_PICO
+	if _V in A or'table top'in A:return KEYPAD_TABLETOP
+	if _W in A:return KEYPAD_PICO
 	return KEYPAD_GENERIC
 def _discover_lip_keypads(hass):
-	H=hass;N=dr.async_get(H);O=er.async_get(H);J=[]
-	for A in N.devices.values():
+	H=hass;P=dr.async_get(H);Q=er.async_get(H);J=[]
+	for A in P.devices.values():
 		B=next((str(A[1])for A in A.identifiers if A[0]==_t),_A)
 		if B is _A:continue
-		D={}
-		for E in er.async_entries_for_device(O,A.id):
+		C={}
+		for E in er.async_entries_for_device(Q,A.id):
 			if E.domain!='event':continue
 			K=re.search('(\\d+)$',E.entity_id)
-			if K:L=int(K.group(1));D[L]=E.original_name or E.name or f"Button {L}"
-		if not D:continue
-		F=sorted(D);I=A.model or'';G=''
+			if K:L=int(K.group(1));C[L]=E.original_name or E.name or f"Button {L}"
+		if not C:continue
+		F=sorted(C);M=18 if 18 in C else _A;N=19 if 19 in C else _A;R=[A for A in F if A not in(N,M)];I=A.model or'';G=''
 		if A.area_id:
-			M=ar.async_get(H).async_get_area(A.area_id)
-			if M:G=M.name
-		if A.name_by_user:C=A.name_by_user
-		elif G:C=f"{G} keypad {B}"
-		else:C=A.name or f"keypad {B}"
-		J.append({_L:f"lip_{B}",_B:C,_C:f"{C} ({I or _J}, {len(F)} buttons)",'data':{_B:C,'backend':_P,'lip_id':B,_G:A.id,CONF_DEVICE_SERIAL:f"lip_{B}",CONF_DEVICE_NAME:C,CONF_AREA_NAME:G,CONF_KEYPAD_TYPE:_infer_lip_keypad_type(I),_u:I,_K:F,_I:{str(A):D[A]for A in F},_O:F}})
+			O=ar.async_get(H).async_get_area(A.area_id)
+			if O:G=O.name
+		if A.name_by_user:D=A.name_by_user
+		elif G:D=f"{G} keypad {B}"
+		else:D=A.name or f"keypad {B}"
+		J.append({_L:f"lip_{B}",_B:D,_C:f"{D} ({I or _J}, {len(F)} buttons)",'data':{_B:D,'backend':_R,'lip_id':B,_G:A.id,CONF_DEVICE_SERIAL:f"lip_{B}",CONF_DEVICE_NAME:D,CONF_AREA_NAME:G,CONF_KEYPAD_TYPE:_infer_lip_keypad_type(I),_u:I,_K:F,_I:{str(A):C[A]for A in F},_O:R,_P:N,_Q:M}})
 	return sorted(J,key=lambda k:k[_B])
 class LutronKeypadsConfigFlow(config_entries.ConfigFlow,domain=DOMAIN):
 	VERSION=1
@@ -247,9 +247,9 @@ class LutronKeypadsConfigFlow(config_entries.ConfigFlow,domain=DOMAIN):
 	async def async_step_source(A,user_input=_A):
 		C=user_input;B='source'
 		if C is not _A:
-			if C[B]==_P:return await A.async_step_lip()
+			if C[B]==_R:return await A.async_step_lip()
 			return await A.async_step_caseta()
-		return A.async_show_form(step_id=B,data_schema=vol.Schema({vol.Required(B,default=_j):vol.In({_j:'Caséta / RA2 Select (lutron_caseta)',_P:'Homeworks QS / RadioRA (lutron_lip)'})}))
+		return A.async_show_form(step_id=B,data_schema=vol.Schema({vol.Required(B,default=_j):vol.In({_j:'Caséta / RA2 Select (lutron_caseta)',_R:'Homeworks QS / RadioRA (lutron_lip)'})}))
 	async def async_step_lip(A,user_input=_A):
 		D=user_input;F=_discover_lip_keypads(A.hass);G={A.unique_id or''for A in A.hass.config_entries.async_entries(DOMAIN)};B=[A for A in F if A[_L]not in G]
 		if not B:return A.async_abort(reason=_w)
@@ -258,7 +258,7 @@ class LutronKeypadsConfigFlow(config_entries.ConfigFlow,domain=DOMAIN):
 			H=D.get(_J);C=next((A for A in B if A[_L]==H),_A)
 			if C is _A:E['base']=_x
 			else:await A.async_set_unique_id(C[_L]);A._abort_if_unique_id_configured();return A.async_create_entry(title=C[_B],data=C['data'])
-		return A.async_show_form(step_id=_P,data_schema=vol.Schema({vol.Required(_J):vol.In({A[_L]:A[_C]for A in B})}),errors=E,description_placeholders={'count':str(len(B))})
+		return A.async_show_form(step_id=_R,data_schema=vol.Schema({vol.Required(_J):vol.In({A[_L]:A[_C]for A in B})}),errors=E,description_placeholders={'count':str(len(B))})
 	async def async_step_caseta(A,user_input=_A):
 		F='device_serial';C=user_input;G=A.hass.config_entries.async_entries(_M)
 		if not G:return A.async_abort(reason=_v)
