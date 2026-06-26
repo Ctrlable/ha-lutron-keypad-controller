@@ -1,6 +1,7 @@
 from __future__ import annotations
-_E='license_key'
-_D='instance_id'
+_F='license_key'
+_E='instance_id'
+_D='keys'
 _C=False
 _B=True
 _A=None
@@ -37,28 +38,34 @@ def _decode_jwt_rs256(token):
 	try:M.verify(O,N,G(),H())
 	except I:raise LicenseError('License signature invalid')
 	P=B.loads(A(E));return P
-def validate_license_offline(token,current_version=_A):
-	J='disable';D=current_version
+def validate_license_offline(token,current_version=_A,expected_product=EXPECTED_PRODUCT):
+	K='disable';E=expected_product;D=current_version
 	try:A=_decode_jwt_rs256(token)
 	except LicenseError:raise
-	except Exception as G:raise LicenseError(f"License decode error: {G}")from G
-	E=A.get('product')
-	if EXPECTED_PRODUCT and E!=EXPECTED_PRODUCT:raise LicenseError(f"License is for product {E!r}, not Lutron Keypad Controller ({EXPECTED_PRODUCT!r})")
-	K=A.get('jti','');F=A.get('on_expire',J);H=int(A.get('grace_days',0));B=A.get('exp');L=A.get('binding','none');M=A.get(_D)or _A;C=A.get('max_version')or _A;I=time.time()
+	except Exception as H:raise LicenseError(f"License decode error: {H}")from H
+	F=A.get('product')
+	if E and F!=E:raise LicenseError(f"License is for product {F!r}, not {E!r}")
+	L=A.get('jti','');G=A.get('on_expire',K);I=int(A.get('grace_days',0));B=A.get('exp');M=A.get('binding','none');N=A.get(_E)or _A;C=A.get('max_version')or _A;J=time.time()
 	if C and D and not _version_allowed(D,C):raise LicenseError(f"License covers up to version {C}.x; this installation is v{D}. Please obtain a new license to use this version.")
-	if B is not _A and I>B:
-		N=H*86400
-		if F==J:raise LicenseError('License has expired')
-		if F=='grace_period'and I>B+N:raise LicenseError('License grace period has also expired')
-	return LicenseResult(valid=_B,on_expire=F,grace_days=H,expires_at=B,jti=K,binding=L,instance_id=M,max_version=C,product=E)
+	if B is not _A and J>B:
+		O=I*86400
+		if G==K:raise LicenseError('License has expired')
+		if G=='grace_period'and J>B+O:raise LicenseError('License grace period has also expired')
+	return LicenseResult(valid=_B,on_expire=G,grace_days=I,expires_at=B,jti=L,binding=M,instance_id=N,max_version=C,product=F)
 async def load_license_cache(hass):from homeassistant.helpers.storage import Store;A=Store(hass,_STORAGE_VERSION,_STORAGE_KEY);return await A.async_load()or{}
 async def save_license_cache(hass,jti):from homeassistant.helpers.storage import Store;A=Store(hass,_STORAGE_VERSION,_STORAGE_KEY);await A.async_save({'jti':jti,'last_ok':time.time()})
 _KEY_STORAGE_KEY='lutron_keypad_controller_license_key'
-async def remember_license_key(hass,key):from homeassistant.helpers.storage import Store;A=Store(hass,_STORAGE_VERSION,_KEY_STORAGE_KEY);await A.async_save({_E:key})
-async def recall_license_key(hass):from homeassistant.helpers.storage import Store;A=Store(hass,_STORAGE_VERSION,_KEY_STORAGE_KEY);B=await A.async_load()or{};return(B.get(_E)or'').strip()
+async def remember_license_key(hass,key,product=EXPECTED_PRODUCT):
+	B=product;from homeassistant.helpers.storage import Store;C=Store(hass,_STORAGE_VERSION,_KEY_STORAGE_KEY);A=await C.async_load()or{};D=dict(A.get(_D)or{});D[B]=key;A[_D]=D
+	if B==EXPECTED_PRODUCT:A[_F]=key
+	await C.async_save(A)
+async def recall_license_key(hass,product=EXPECTED_PRODUCT):
+	B=product;from homeassistant.helpers.storage import Store;D=Store(hass,_STORAGE_VERSION,_KEY_STORAGE_KEY);C=await D.async_load()or{};E=C.get(_D)or{};A=(E.get(B)or'').strip()
+	if not A and B==EXPECTED_PRODUCT:A=(C.get(_F)or'').strip()
+	return A
 async def check_revocation_online(jti,instance_id=_A):
 	C=instance_id;E=_CHECK_URL.format(jti=jti);D={}
-	if C:D[_D]=C
+	if C:D[_E]=C
 	try:
 		async with aiohttp.ClientSession()as F:
 			async with F.get(E,params=D,timeout=aiohttp.ClientTimeout(total=10))as A:

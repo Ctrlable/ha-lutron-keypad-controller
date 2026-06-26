@@ -45,6 +45,13 @@
         "data": {
           "keypad": "Keypad"
         }
+      },
+      "rfwc5": {
+        "title": "Select Keypad (Eaton RFWC5)",
+        "description": "Found {count} Eaton RFWC5 Z-Wave keypad(s). Select the one you want to configure.",
+        "data": {
+          "keypad": "Keypad"
+        }
       }
     },
     "error": {

@@ -4,7 +4,8 @@ from typing import Callable
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 class KeypadBackend(ABC):
-	source_domain:str='';native_hold:bool=False;native_double_tap:bool=False
+	source_domain:str='';license_product:str='lutron_keypad_controller';native_hold:bool=False;native_double_tap:bool=False
+	async def async_initialize(A,hass,controller):0
 	@abstractmethod
 	def subscribe(self,hass,controller):0
 	@abstractmethod
